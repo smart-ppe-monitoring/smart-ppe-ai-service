@@ -1,5 +1,0 @@
-﻿Mô hình,Params,GFLOPs,mAP@50,mAP@50-95,Precision,Recall,Train Time (min)
-YOLOv8n (Fine-tuned),3.2M,8.7,0.9055,0.5861,0.9230,0.8361,N/A
-YOLO11n (Fine-tuned),2.6M,6.5,0.8864,0.5818,0.8996,0.8050,N/A
-YOLO11s (Fine-tuned),9.4M,21.5,0.9307,0.6236,0.9337,0.8792,N/A
-YOLO11m (Fine-tuned),20.1M,68.0,0.9317,0.6541,0.9827,0.8893,125.4
