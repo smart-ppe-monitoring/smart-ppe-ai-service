@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Intelligence — Test UI</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --text: #c9d1d9; --dim: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", sans-serif; height: 100vh;
+    display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 10px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 16px; margin: 0; color: var(--accent); }
+  #uploadRow { display: flex; gap: 8px; align-items: center; flex: 1; }
+  #statusText { color: var(--dim); font-size: 13px; }
+  #statusText.error { color: var(--red); }
+  progress { width: 200px; height: 10px; }
+
+  .main { flex: 1; display: grid; grid-template-columns: 3fr 2fr; gap: 12px; padding: 12px; min-height: 0; }
+  .pane { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+
+  #videoPane video { width: 100%; max-height: 68vh; background: #000; }
+  #videoInfo { padding: 8px 12px; font-size: 13px; color: var(--dim); border-bottom: 1px solid var(--border); }
+  #videoInfo b { color: var(--text); }
+
+  #logPane { font-family: "SF Mono", Menlo, monospace; font-size: 12.5px; overflow-y: auto; padding: 12px; }
+  .card { border: 1px solid var(--border); border-radius: 4px; margin-bottom: 12px; }
+  .card h2 { font-size: 12px; margin: 0; padding: 6px 10px; background: #1c2128; border-bottom: 1px solid var(--border); color: var(--dim); text-transform: uppercase; letter-spacing: .5px; white-space: normal; overflow-wrap: break-word; }
+  .card .body { padding: 8px 10px; }
+
+  #frameHead { font-size: 14px; margin-bottom: 6px; }
+  #frameHead b { color: var(--accent); }
+  .summary span { margin-right: 12px; }
+  .c-person { color: #ff8a5c; } .c-helmet { color: #7ee04b; } .c-vest { color: #4bb0ff; }
+
+  table.det { width: 100%; border-collapse: collapse; }
+  table.det th { color: var(--dim); text-align: left; font-weight: normal; border-bottom: 1px solid var(--border); padding: 2px 6px; }
+  table.det td { padding: 2px 6px; border-bottom: 1px solid #21262d; white-space: nowrap; }
+  table.det .num { text-align: right; }
+  table.persons { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  table.persons th { color: var(--dim); text-align: left; font-weight: normal; border-bottom: 1px solid var(--border); padding: 2px 6px; }
+  table.persons td { padding: 2px 6px; border-bottom: 1px solid #21262d; white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+
+  .evt-new { color: var(--green); } .evt-lost { color: var(--red); }
+  .good { color: var(--green); } .bad { color: var(--red); }
+  #eventsBox:empty::after { content: "không có sự kiện"; color: var(--dim); }
+  .card.confirm { border-color: #7a2b2b; }
+  .card.confirm h2 { color: var(--red); }
+  .confirm-item { border-bottom: 1px solid #21262d; padding: 3px 0; }
+  .confirm-item:last-child { border-bottom: none; }
+
+  #tracksBox { display: flex; flex-wrap: wrap; gap: 6px; }
+  .track-chip { border: 1px solid var(--border); border-radius: 10px; padding: 1px 8px; }
+
+  #evidenceBtn { background: #1c2128; color: var(--accent); border: 1px solid var(--border); border-radius: 4px; padding: 3px 10px; cursor: pointer; font-size: 12px; margin: 6px 0 0 10px; }
+  #evidenceBox { margin-top: 8px; }
+  .evidence-item { display: flex; gap: 8px; align-items: flex-start; border-bottom: 1px solid #21262d; padding: 6px 0; }
+  .evidence-item:last-child { border-bottom: none; }
+  .evidence-item img { width: 160px; border: 1px solid var(--border); border-radius: 4px; display: block; }
+  .evidence-item.err { background: #2a1517; border-radius: 4px; padding: 6px; }
+  .evidence-info { font-size: 12px; }
+  .evidence-info a { color: var(--accent); }
+
+  .toolbar { display: flex; gap: 8px; align-items: center; padding: 8px 10px; font-size: 12px; color: var(--dim); }
+  .toolbar input[type=number] { width: 70px; background: #0d1117; color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Video Intelligence — Test UI</h1>
+  <div id="uploadRow">
+    <input type="file" id="fileInput" accept="video/*">
+    <button id="uploadBtn">Xử lý video</button>
+    <progress id="progressBar" value="0" max="1" hidden></progress>
+    <span id="statusText">Chọn video để bắt đầu (kết quả xử lý lưu tại test-ui/results/)</span>
+  </div>
+</header>
+
+<div class="main">
+  <div class="pane" id="videoPane">
+    <div id="videoInfo">Chưa có video — upload một video để xem kết quả detect + tracking.</div>
+    <video id="video" controls></video>
+    <div class="toolbar">
+      <label>Nhảy tới frame: <input type="number" id="frameJump" min="1" value="1"></label>
+      <span id="videoStats"></span>
+    </div>
+  </div>
+
+  <div class="pane" id="logPane">
+    <div class="card confirm">
+      <h2>Vi phạm được xác nhận + chống trùng (VI-06 + VI-07)</h2>
+      <div class="body" id="confirmBox"><span style="color:var(--dim)">Chưa xử lý video.</span></div>
+      <button id="evidenceBtn" hidden>Xem bằng chứng / frame lỗi</button>
+      <div class="body" id="evidenceBox" hidden></div>
+    </div>
+
+    <div class="card">
+      <h2>Tóm tắt theo người<br>(có mũ / có áo theo từng frame)</h2>
+      <div class="body" id="personSummary"><span style="color:var(--dim)">Đang tải...</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Khung hình đang phát</h2>
+      <div class="body" id="frameCard">
+        <div id="frameHead"><b>frame —</b></div>
+        <div class="summary" id="frameSummary"></div>
+        <div id="eventsBox"></div>
+        <table class="det">
+          <thead><tr><th>Lớp</th><th>Track</th><th class="num">Conf</th><th>Bbox (x1,y1,x2,y2)</th><th class="num">Kích thước</th></tr></thead>
+          <tbody id="detTable"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Ghép PPE–Person + Luật an toàn (VI-04 + VI-05)</h2>
+      <div class="body" id="assoBox"></div>
+    </div>
+
+    <div class="card">
+      <h2>Người đang theo dõi (tại frame hiện tại)</h2>
+      <div class="body" id="tracksBox"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const state = { jobId: null, fps: 25, entries: [], meta: null,
+                personTracks: [], violations: [], evidence: [] };
+
+const $ = (id) => document.getElementById(id);
+const video = $("video");
+
+// ---------- upload + xử lý ----------
+$("uploadBtn").onclick = async () => {
+  const file = $("fileInput").files[0];
+  if (!file) { setStatus("Hãy chọn file video trước.", true); return; }
+  setStatus("Đang upload...");
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await fetch("/api/upload", { method: "POST", body: fd });
+  const d = await r.json();
+  state.jobId = d.job_id;
+  await fetch(`/api/jobs/${state.jobId}/start`, { method: "POST" });
+  $("progressBar").hidden = false;
+  poll();
+};
+
+function setStatus(msg, isError = false) {
+  $("statusText").textContent = msg;
+  $("statusText").className = isError ? "error" : "";
+}
+
+async function poll() {
+  const d = await (await fetch(`/api/jobs/${state.jobId}/status`)).json();
+  if (d.status === "processing") {
+    const total = d.total_frames || 1;
+    $("progressBar").value = d.progress || 0;
+    setStatus(`Đang xử lý... frame ${d.current_frame || 0}/${total} (${Math.round((d.progress || 0) * 100)}%)`);
+    setTimeout(poll, 1000);
+  } else if (d.status === "done") {
+    $("progressBar").value = 1;
+    setStatus("Xử lý xong — đang nạp kết quả...");
+    await loadResult();
+  } else {
+    setStatus(`Lỗi: ${d.error || "không rõ"}`, true);
+  }
+}
+
+async function loadResult() {
+  state.meta = await (await fetch(`/api/jobs/${state.jobId}/meta`)).json();
+  state.fps = state.meta.fps;
+  const text = await (await fetch(`/api/jobs/${state.jobId}/log`)).text();
+  state.entries = text.trim().split("\n").filter(Boolean).map(JSON.parse);
+  state.violations = [];
+  state.entries.forEach(e => (e.violations || []).forEach(v =>
+    state.violations.push({ ...v, frame: e.frame })));
+  state.evidence = [];
+  state.entries.forEach(e => (e.evidence || []).forEach(ev =>
+    state.evidence.push({ ...ev, frame: e.frame })));
+  state.personTracks = computePersonTracks();
+
+  const m = state.meta;
+  $("videoInfo").innerHTML =
+    `File: <b>${m.source}</b> | ${m.size[0]}x${m.size[1]} | <b>${m.total_frames}</b> frame | ` +
+    `<b>${m.fps.toFixed(2)}</b> fps | Model: <b>${m.model}</b>`;
+  setStatus("Xong. Phát video và theo dõi log bên phải.");
+  renderViolations();
+  renderEvidence();
+  renderPersonSummary();
+  video.src = `/api/jobs/${state.jobId}/video`;
+  video.load();
+}
+
+const VT_LABEL = { no_helmet: "không đội mũ bảo hộ", no_safety_vest: "không mặc áo phản quang" };
+
+function renderViolations() {
+  const items = state.violations.map(v =>
+    `<div class="confirm-item"><span class="bad">🚨 person #${v.person} — ${VT_LABEL[v.violation_type] || v.violation_type}</span><br>` +
+    `<span style="color:var(--dim)">xác nhận t=${v.confirmed_t.toFixed(2)}s (vi phạm từ t=${v.start_t.toFixed(2)}s, kéo dài ${v.duration_s.toFixed(2)}s — frame ${v.frame}) · ` +
+    `${v.camera_id} · id=${v.event_id}${v.canonical_person !== v.person ? ` · nối từ track #${v.canonical_person}` : ""}</span></div>`).join("");
+  $("confirmBox").innerHTML = items ||
+    `<span style="color:var(--dim)">chưa có vi phạm nào đủ ${state.meta?.confirmation_duration_s ?? 3} giây liên tục (VI-06) và không trùng trong 30 giây (VI-07)</span>`;
+}
+
+// ---------- bằng chứng vi phạm (VI-08) ----------
+function renderEvidence() {
+  const btn = $("evidenceBtn");
+  if (!state.evidence.length) { btn.hidden = true; $("evidenceBox").hidden = true; return; }
+  btn.hidden = false;
+  btn.textContent = `Xem bằng chứng / frame lỗi (${state.evidence.length})`;
+  const items = state.evidence.map(ev => {
+    const v = state.violations.find(x => x.event_id === ev.event_id);
+    const info = v
+      ? `person #${v.person} — ${VT_LABEL[v.violation_type] || v.violation_type}<br>` +
+        `<span style="color:var(--dim)">t=${v.confirmed_t.toFixed(2)}s · frame ${ev.frame} · ${v.camera_id} · id=${ev.event_id}</span>`
+      : `<span style="color:var(--dim)">id=${ev.event_id} · frame ${ev.frame}</span>`;
+    if (ev.status === "saved") {
+      return `<div class="evidence-item">` +
+        `<a href="/api/jobs/${state.jobId}/evidence/${ev.event_id}.jpg" target="_blank">` +
+        `<img loading="lazy" src="/api/jobs/${state.jobId}/evidence/${ev.event_id}.jpg" alt="bằng chứng ${ev.event_id}"></a>` +
+        `<div class="evidence-info"><span class="good">✔ Đã lưu</span> — ${ev.path}<br>${info}</div></div>`;
+    }
+    return `<div class="evidence-item err">` +
+      `<div style="width:160px;height:90px;border:1px dashed var(--red);border-radius:4px;display:flex;align-items:center;justify-content:center;color:var(--red);font-size:11px">frame ${ev.frame}<br>không lưu được ảnh</div>` +
+      `<div class="evidence-info"><span class="bad">LỖI</span> — ${ev.error}<br>${info}<br>` +
+      `<a href="#" onclick="seekToFrame(${ev.frame});return false">▶ nhảy tới frame ${ev.frame} trong video</a></div></div>`;
+  }).join("");
+  $("evidenceBox").innerHTML = items;
+}
+
+$("evidenceBtn").onclick = () => { $("evidenceBox").hidden = !$("evidenceBox").hidden; };
+
+// ---------- đồng bộ video <-> log ----------
+function currentFrame() {
+  if (!state.entries.length) return 0;
+  return Math.min(state.entries.length, Math.floor(video.currentTime * state.fps) + 1);
+}
+
+video.addEventListener("timeupdate", () => { if (state.entries.length) showFrame(currentFrame()); });
+
+function showFrame(frame) {
+  const e = state.entries[frame - 1];
+  if (!e) return;
+  $("frameHead").innerHTML = `<b>frame ${e.frame}</b> <span style="color:var(--dim)">t = ${e.t.toFixed(2)}s</span>`;
+  const s = e.summary;
+  $("frameSummary").innerHTML =
+    `<span class="c-person">${s.person} person</span>` +
+    `<span class="c-helmet">${s.helmet} helmet</span>` +
+    `<span class="c-vest">${s.safety_vest} safety_vest</span>` +
+    `<span>${s.tracks} track</span>`;
+  $("eventsBox").innerHTML = e.events.map(ev =>
+    ev.includes("biến mất")
+      ? `<div class="evt-lost">- ${ev}</div>`
+      : `<div class="evt-new">+ ${ev}</div>`).join("");
+  $("detTable").innerHTML = e.detections.map(d =>
+    `<tr><td class="c-${d.class_name === "safety_vest" ? "vest" : d.class_name}">${d.class_name}</td>` +
+    `<td>${d.track_id ?? "-"}</td>` +
+    `<td class="num">${d.confidence.toFixed(2)}</td>` +
+    `<td>(${d.bbox.join(", ")})</td>` +
+    `<td class="num">${d.w} x ${d.h}px</td></tr>`).join("") ||
+    `<tr><td colspan="5" style="color:var(--dim)">không phát hiện đối tượng nào</td></tr>`;
+
+  renderAssociations(e.frame);
+  renderActiveTracks(e.frame);
+}
+
+// ---------- ghép PPE–Person + luật an toàn (dữ liệu VI-04/VI-05 tính ở server) ----------
+function stateSuffix(s) {
+  if (!s) return "";
+  if (s.status === "COMPLIANT") return ` <span class="good">→ OK</span>`;
+  if (s.status === "VIOLATION_CANDIDATE") return ` <span class="bad">→ VI PHẠM? (${s.violations.join(", ")})</span>`;
+  return ` <span class="c-helmet">→ UNKNOWN (${s.reason})</span>`;
+}
+
+function renderAssociations(frame) {
+  const e = state.entries[frame - 1];
+  if (!e) return;
+  const asso = e.associations || [];
+  const statesById = new Map((e.persons || []).map(s => [s.track_id, s]));
+  const used = new Set();
+  asso.forEach(a => { if (a.helmet != null) used.add(a.helmet); if (a.vest != null) used.add(a.vest); });
+  const left = (e.detections || []).filter(d =>
+    (d.class_name === "helmet" || d.class_name === "safety_vest") &&
+    d.track_id != null && !used.has(d.track_id));
+
+  const rows = asso.map(a => {
+    if (a.status === "unknown") {
+      return `<div>person #${a.person} — <span class="c-helmet">UNKNOWN</span> <span style="color:var(--dim)">(người &lt; 60px, không kết luận)</span></div>`;
+    }
+    const h = a.helmet != null ? `<span class="c-helmet">mũ #${a.helmet}</span>` : `<span class="bad">KHÔNG mũ</span>`;
+    const v = a.vest != null ? `<span class="c-vest">áo #${a.vest}</span>` : `<span class="bad">KHÔNG áo</span>`;
+    return `<div>person #${a.person} ← ${h} · ${v}${stateSuffix(statesById.get(a.person))}</div>`;
+  }).join("");
+  const leftovers = left.map(d =>
+    `<div style="color:var(--dim)">${d.class_name} #${d.track_id} — không ghép được với ai</div>`).join("");
+  $("assoBox").innerHTML =
+    (rows || `<span style="color:var(--dim)">không có người nào được ghép trong frame này</span>`) +
+    (leftovers ? `<div style="margin-top:6px">${leftovers}</div>` : "");
+}
+
+// ---------- tóm tắt theo người (từ trạng thái VI-05 của server) ----------
+function computePersonTracks() {
+  const persons = new Map();
+  state.entries.forEach(e => {
+    (e.persons || []).forEach(s => {
+      let rec = persons.get(s.track_id);
+      if (!rec) {
+        rec = { id: s.track_id, frames: [], ok: [], noHelmet: new Set(), noVest: new Set(), unknown: 0 };
+        persons.set(s.track_id, rec);
+      }
+      rec.frames.push(e.frame);
+      if (s.status === "UNKNOWN") { rec.unknown++; }
+      else {
+        rec.ok.push(e.frame);
+        if (s.violations.includes("no_helmet")) rec.noHelmet.add(e.frame);
+        if (s.violations.includes("no_safety_vest")) rec.noVest.add(e.frame);
+      }
+    });
+  });
+  return [...persons.values()].sort((a, b) => a.id - b.id);
+}
+
+function ranges(frames) {
+  if (!frames.length) return "";
+  const parts = [];
+  let start = frames[0], prev = frames[0];
+  for (let i = 1; i < frames.length; i++) {
+    if (frames[i] === prev + 1) { prev = frames[i]; continue; }
+    parts.push(start === prev ? `${start}` : `${start}-${prev}`);
+    start = prev = frames[i];
+  }
+  parts.push(start === prev ? `${start}` : `${start}-${prev}`);
+  return parts.join(", ");
+}
+
+function renderPersonSummary() {
+  const rows = state.personTracks.map(p => {
+    const f0 = p.frames[0], f1 = p.frames[p.frames.length - 1];
+    const missH = [...p.noHelmet].sort((a, b) => a - b);
+    const missV = [...p.noVest].sort((a, b) => a - b);
+    const confs = state.violations.filter(v => v.person === p.id || v.canonical_person === p.id);
+    let verdict = "ĐỦ BẢO HỘ", badge = "good";
+    if (confs.length) {
+      verdict = `VI PHẠM XÁC NHẬN (${[...new Set(confs.map(c => c.violation_type))].join(", ")})`;
+      badge = "bad";
+    } else if (p.noHelmet.size || p.noVest.size) {
+      const types = [];
+      if (p.noHelmet.size) types.push("no_helmet");
+      if (p.noVest.size) types.push("no_safety_vest");
+      verdict = `VI PHẠM DỰ KIẾN (${types.join(", ")})`;
+      badge = "bad";
+    } else if (!p.ok.length) {
+      verdict = "UNKNOWN";
+      badge = "bad";
+    }
+    const unknownNote = p.unknown ? ` <span style="color:var(--dim)">(${p.unknown} frame UNKNOWN)</span>` : "";
+    return `<tr><td>person #${p.id}</td><td>${f0} → ${f1} (${p.frames.length} frame)</td>` +
+      `<td class="${missH.length ? "bad" : ""}">${missH.length ? "thiếu " + ranges(missH) : (p.ok.length ? "có đủ" : "—")}</td>` +
+      `<td class="${missV.length ? "bad" : ""}">${missV.length ? "thiếu " + ranges(missV) : (p.ok.length ? "có đủ" : "—")}</td>` +
+      `<td class="${badge}">${verdict}${unknownNote}</td></tr>`;
+  }).join("");
+  $("personSummary").innerHTML = state.personTracks.length
+    ? `<table class="persons"><thead><tr><th style="width:14%">Người</th><th style="width:24%">Xuất hiện</th><th style="width:24%">Mũ bảo hộ</th><th style="width:24%">Áo phản quang</th><th style="width:14%">Đánh giá</th></tr></thead><tbody>${rows}</tbody></table>
+       <div style="color:var(--dim);margin-top:6px">Trạng thái VI-05 của server: thiếu PPE bắt buộc → VI PHẠM DỰ KIẾN (chưa xác nhận — cần VI-06 tồn tại liên tục 3 giây); người &lt; 60px / confidence thấp / bị cắt khung → UNKNOWN. Kết luận cuối cùng xem thẻ VI-06 + VI-07 (đã lọc trùng 30 giây).</div>`
+    : `<span style="color:var(--dim)">không tìm thấy người nào</span>`;
+}
+
+function renderActiveTracks(frame) {
+  const e = state.entries[frame - 1];
+  if (!e) return;
+  const states = e.persons || [];
+  $("tracksBox").innerHTML = states.length
+    ? states.map(s => {
+        let badge = "good", label = "ĐỦ BẢO HỘ";
+        if (s.status === "VIOLATION_CANDIDATE") { badge = "bad"; label = `VI PHẠM? (${s.violations.join(", ")})`; }
+        else if (s.status === "UNKNOWN") { badge = "bad"; label = `UNKNOWN (${s.reason})`; }
+        return `<span class="track-chip">person #${s.track_id} <span class="${badge}">${label}</span></span>`;
+      }).join("")
+    : `<span style="color:var(--dim)">không có người nào trong frame này</span>`;
+}
+
+function seekToFrame(frame) {
+  video.currentTime = (frame - 1) / state.fps;
+  showFrame(frame);
+}
+
+$("frameJump").onchange = () => {
+  const f = Math.min(state.entries.length, Math.max(1, parseInt($("frameJump").value) || 1));
+  seekToFrame(f);
+};
+</script>
+</body>
+</html>

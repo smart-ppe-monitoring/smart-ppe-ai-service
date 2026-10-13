@@ -1,0 +1,5 @@
+﻿Mô hình,AP@50 (person),AP@50 (helmet),AP@50 (safety_vest)
+YOLOv8n (Fine-tuned),0.8510,0.9652,0.9004
+YOLO11n (Fine-tuned),0.8495,0.9346,0.8751
+YOLO11s (Fine-tuned),0.8894,0.9626,0.9400
+YOLO11m (Fine-tuned),0.8871,0.9639,0.9441

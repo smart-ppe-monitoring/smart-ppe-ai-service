@@ -1,0 +1,25 @@
+# Môi trường ảo
+.venv/
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# File hệ thống
+.DS_Store
+
+# Video mẫu test (video5.mp4 ~241MB vượt giới hạn GitHub 100MB — chia sẻ qua Drive nếu cần)
+videos/
+
+# Dữ liệu xử lý sinh ra khi chạy (tái tạo được)
+test-ui/uploads/
+test-ui/results/
+outputs/
+evidences/
+
+# Ảnh chụp lỗi cá nhân (không cần thiết cho repo)
+test-ui/error/
+
+# Bỏ comment dòng dưới nếu không muốn đẩy model lên git (models/best.pt ~39MB)
+# models/*.pt
