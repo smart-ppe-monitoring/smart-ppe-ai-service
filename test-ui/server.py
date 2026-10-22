@@ -83,7 +83,7 @@ def process_video(job_id, video_path):
             known_classes = {}  # track_id -> class_name (nhớ từ frame trước để ghi sự kiện "biến mất")
             confirmation = ViolationConfirmation()
             dedup = ViolationDeduplicator()
-            with open(paths["log"], "w") as logf:
+            with open(paths["log"], "w", encoding="utf-8") as logf:
                 for num, frame in reader:
                     detections = detector.detect(frame)
                     associations = associate(detections)
