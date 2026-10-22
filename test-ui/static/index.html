@@ -81,6 +81,10 @@
   <h1>Video Intelligence — Test UI</h1>
   <div id="uploadRow">
     <input type="file" id="fileInput" accept="video/*">
+    <select id="modelSelector" style="background: #161b22; color: #58a6ff; border: 1px solid #30363d; border-radius: 4px; padding: 4px 8px; font-size: 13px; font-weight: 500;">
+      <option value="models/yolo11m-best.pt" selected>Model: yolo11m-best (40.5 MB)</option>
+      <option value="models/yolo11n-best.pt">Model: yolo11n-best (5.5 MB)</option>
+    </select>
     <button id="uploadBtn">Xử lý video</button>
     <select id="jobSelector" style="display:none; background: #161b22; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 4px 8px; font-size: 13px;"></select>
     <progress id="progressBar" value="0" max="1" hidden></progress>
@@ -157,13 +161,15 @@ $("fileInput").onchange = () => {
 $("uploadBtn").onclick = async () => {
   const file = $("fileInput").files[0];
   if (!file) { setStatus("Hãy chọn file video trước.", true); return; }
-  setStatus("Đang upload...");
+  const model = $("modelSelector")?.value || "models/yolo11m-best.pt";
+  const modelName = model.split("/").pop();
+  setStatus(`Đang upload & khởi chạy với ${modelName}...`);
   const fd = new FormData();
   fd.append("file", file);
   const r = await fetch("/api/upload", { method: "POST", body: fd });
   const d = await r.json();
   state.jobId = d.job_id;
-  await fetch(`/api/jobs/${state.jobId}/start`, { method: "POST" });
+  await fetch(`/api/jobs/${state.jobId}/start?model=${encodeURIComponent(model)}`, { method: "POST" });
   $("progressBar").hidden = false;
   poll();
 };
@@ -436,11 +442,27 @@ async function loadAvailableJobs() {
   }
 }
 
+async function loadAvailableModels() {
+  try {
+    const r = await fetch("/api/models");
+    const models = await r.json();
+    const sel = $("modelSelector");
+    if (models && models.length > 0 && sel) {
+      sel.innerHTML = models.map(m =>
+        `<option value="${m.path}" ${m.is_default ? "selected" : ""}>Model: ${m.name} (${m.size_mb} MB)</option>`
+      ).join("");
+    }
+  } catch (e) {
+    console.error("Không thể tải danh sách models:", e);
+  }
+}
+
 const q = new URLSearchParams(window.location.search);
 if (q.get("job")) {
   state.jobId = q.get("job");
   loadResult();
 }
+loadAvailableModels();
 loadAvailableJobs();
 </script>
 </body>

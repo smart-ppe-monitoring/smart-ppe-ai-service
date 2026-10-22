@@ -101,13 +101,13 @@ def _get_job(job_id):
     return job
 
 
-def process_video(job_id, video_path):
+def process_video(job_id, video_path, model_path=None):
     """Xử lý toàn bộ video: detect + tracking + vẽ box + ghi log JSONL. Chạy trong thread riêng."""
     job = _get_job(job_id)
     paths = _job_paths(job_id)
     try:
         with VideoReader(str(video_path)) as reader:
-            detector = Detector().load()
+            detector = Detector(model_path=model_path).load()
             w, h = reader.size
             total = reader.frame_count
             fps = reader.fps
@@ -258,7 +258,7 @@ async def upload(file: UploadFile = File(...)):
 
 
 @app.post("/api/jobs/{job_id}/start")
-def start(job_id: str):
+def start(job_id: str, model: str = None):
     job = _get_job(job_id)
     with JOBS_LOCK:
         if job.get("status") == "processing":
@@ -270,7 +270,7 @@ def start(job_id: str):
             job["status"] = "error"
             job["error"] = "Không tìm thấy file upload"
         raise HTTPException(404, "Không tìm thấy file upload")
-    threading.Thread(target=process_video, args=(job_id, src), daemon=True).start()
+    threading.Thread(target=process_video, args=(job_id, src, model), daemon=True).start()
     return {"status": "processing"}
 
 
@@ -329,6 +329,23 @@ def list_jobs():
                     pass
     jobs.sort(key=lambda x: x.get("processed_at", ""), reverse=True)
     return jobs
+
+
+@app.get("/api/models")
+def list_models():
+    models_dir = BASE_DIR.parent / "models"
+    available = []
+    if models_dir.exists():
+        for p in models_dir.glob("*.pt"):
+            if p.stat().st_size > 1000:
+                available.append({
+                    "name": p.stem,
+                    "path": f"models/{p.name}",
+                    "size_mb": round(p.stat().st_size / (1024 * 1024), 1),
+                    "is_default": "yolo11m" in p.name
+                })
+    available.sort(key=lambda x: (not x["is_default"], x["name"]))
+    return available
 
 
 app.mount("/", StaticFiles(directory=BASE_DIR / "static", html=True), name="static")

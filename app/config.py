@@ -39,7 +39,7 @@ COOLDOWN_DURATION_S: int = int(
 )
 
 # ─── Model ────────────────────────────────────────────────────────────────────
-YOLO_MODEL_PATH: str = os.getenv("YOLO_MODEL_PATH", "models/yolo11n-best.pt")
+YOLO_MODEL_PATH: str = os.getenv("YOLO_MODEL_PATH", "models/yolo11m-best.pt")
 MODEL_PATH: str = os.getenv("MODEL_PATH", YOLO_MODEL_PATH)
 MODEL_IMGSZ: int = int(os.getenv("MODEL_IMGSZ", "640"))
 DEVICE: str = os.getenv("DEVICE", "")           # empty = auto (mps if available, else cpu)
