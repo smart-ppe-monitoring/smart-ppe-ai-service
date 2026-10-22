@@ -221,6 +221,8 @@ def process_video(job_id, video_path, model_path=None):
                     with JOBS_LOCK:
                         job["current_frame"] = num
                         job["progress"] = num / total if total else 0.0
+                    if num % 100 == 0 or num == total:
+                        print(f"  [{job.get('source', job_id)}] Frame {num}/{total} ({(num / total * 100 if total else 0):.1f}%)", flush=True)
             writer.release()
             _convert_to_h264(paths["video"])
 
