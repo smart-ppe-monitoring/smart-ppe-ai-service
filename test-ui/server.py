@@ -9,6 +9,8 @@ Chạy (từ thư mục gốc video-intelligence):
 """
 import json
 import re
+import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -53,9 +55,47 @@ def _job_paths(job_id):
     }
 
 
+def _convert_to_h264(video_path: Path):
+    """Chuyển đổi video sang chuẩn H.264 (yuv420p) để phát trực tiếp trên trình duyệt."""
+    if not video_path.exists():
+        return
+    ffmpeg_exe = None
+    try:
+        import imageio_ffmpeg
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        pass
+    if not ffmpeg_exe:
+        ffmpeg_exe = shutil.which("ffmpeg")
+    if not ffmpeg_exe:
+        return
+
+    tmp_path = video_path.with_name(f"{video_path.stem}_h264.mp4")
+    cmd = [
+        ffmpeg_exe, "-y",
+        "-i", str(video_path),
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        str(tmp_path),
+    ]
+    res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if res.returncode == 0 and tmp_path.exists():
+        tmp_path.replace(video_path)
+
+
 def _get_job(job_id):
     with JOBS_LOCK:
         job = JOBS.get(job_id)
+        if job is None:
+            meta_path = _job_paths(job_id)["meta"]
+            if meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    job = {"status": "done", "progress": 1.0, **meta}
+                    JOBS[job_id] = job
+                except Exception:
+                    pass
     if job is None:
         raise HTTPException(404, "Không tìm thấy job")
     return job
@@ -182,6 +222,7 @@ def process_video(job_id, video_path):
                         job["current_frame"] = num
                         job["progress"] = num / total if total else 0.0
             writer.release()
+            _convert_to_h264(paths["video"])
 
         meta = {
             "job_id": job_id,
@@ -273,6 +314,21 @@ def get_meta(job_id: str):
     if not p.exists():
         raise HTTPException(404, "Chưa có meta — job chưa xong")
     return JSONResponse(json.loads(p.read_text(encoding="utf-8")))
+
+
+@app.get("/api/jobs")
+def list_jobs():
+    jobs = []
+    for d in RESULT_DIR.iterdir():
+        if d.is_dir():
+            meta_p = d / "meta.json"
+            if meta_p.exists():
+                try:
+                    jobs.append(json.loads(meta_p.read_text(encoding="utf-8")))
+                except Exception:
+                    pass
+    jobs.sort(key=lambda x: x.get("processed_at", ""), reverse=True)
+    return jobs
 
 
 app.mount("/", StaticFiles(directory=BASE_DIR / "static", html=True), name="static")

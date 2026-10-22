@@ -82,6 +82,7 @@
   <div id="uploadRow">
     <input type="file" id="fileInput" accept="video/*">
     <button id="uploadBtn">Xử lý video</button>
+    <select id="jobSelector" style="display:none; background: #161b22; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 4px 8px; font-size: 13px;"></select>
     <progress id="progressBar" value="0" max="1" hidden></progress>
     <span id="statusText">Chọn video để bắt đầu (kết quả xử lý lưu tại test-ui/results/)</span>
   </div>
@@ -143,6 +144,16 @@ const $ = (id) => document.getElementById(id);
 const video = $("video");
 
 // ---------- upload + xử lý ----------
+$("fileInput").onchange = () => {
+  const file = $("fileInput").files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  video.src = url;
+  video.load();
+  $("videoInfo").innerHTML = `<b>Video đã chọn:</b> ${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB) — <i>Bấm nút <b>"Xử lý video"</b> để hệ thống nhận diện AI và gán nhãn!</i>`;
+  setStatus(`Đã chọn "${file.name}". Bấm "Xử lý video" để bắt đầu nhận diện.`);
+};
+
 $("uploadBtn").onclick = async () => {
   const file = $("fileInput").files[0];
   if (!file) { setStatus("Hãy chọn file video trước.", true); return; }
@@ -199,6 +210,8 @@ async function loadResult() {
   renderViolations();
   renderEvidence();
   renderPersonSummary();
+  const sel = $("jobSelector");
+  if (sel && state.jobId) sel.value = state.jobId;
   video.src = `/api/jobs/${state.jobId}/video`;
   video.load();
 }
@@ -400,6 +413,35 @@ $("frameJump").onchange = () => {
   const f = Math.min(state.entries.length, Math.max(1, parseInt($("frameJump").value) || 1));
   seekToFrame(f);
 };
+
+async function loadAvailableJobs() {
+  try {
+    const r = await fetch("/api/jobs");
+    const jobs = await r.json();
+    const sel = $("jobSelector");
+    if (jobs && jobs.length > 0) {
+      sel.style.display = "inline-block";
+      sel.innerHTML = '<option value="">-- Hoặc xem video đã xử lý sẵn --</option>' +
+        jobs.map(j => `<option value="${j.job_id}">${j.source || j.job_id} (${j.total_frames || '?'} frame)</option>`).join("");
+      sel.onchange = async (e) => {
+        if (!e.target.value) return;
+        state.jobId = e.target.value;
+        setStatus(`Đang tải kết quả ${state.jobId}...`);
+        await loadResult();
+      };
+      if (state.jobId) sel.value = state.jobId;
+    }
+  } catch (e) {
+    console.error("Không thể tải danh sách jobs:", e);
+  }
+}
+
+const q = new URLSearchParams(window.location.search);
+if (q.get("job")) {
+  state.jobId = q.get("job");
+  loadResult();
+}
+loadAvailableJobs();
 </script>
 </body>
 </html>
