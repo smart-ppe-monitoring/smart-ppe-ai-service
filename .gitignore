@@ -37,3 +37,4 @@ evidences/
 outputs/
 test-ui/uploads/
 test-ui/results/
+test-ui/*.json
