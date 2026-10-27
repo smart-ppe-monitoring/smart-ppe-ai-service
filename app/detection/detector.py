@@ -1,3 +1,4 @@
+from pathlib import Path
 """VI-02: Detector — tải model YOLO, chạy inference trên 1 frame.
 
 Đổi model bằng cách sửa MODEL_PATH trong config/env; pipeline không thay đổi.
@@ -23,6 +24,12 @@ def auto_device():
 class Detector:
     def __init__(self, model_path=None, imgsz=None, conf=None, device=None, track=True):
         self.model_path = model_path or config.MODEL_PATH
+        if self.model_path:
+            p = Path(self.model_path)
+            if not p.is_absolute() and not p.exists():
+                root_candidate = Path(__file__).resolve().parent.parent.parent / p
+                if root_candidate.exists():
+                    self.model_path = str(root_candidate)
         self.imgsz = imgsz or config.MODEL_IMGSZ
         self.conf = conf if conf is not None else config.CONFIDENCE_THRESHOLD
         self.device = device or config.DEVICE or auto_device()

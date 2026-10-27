@@ -105,6 +105,12 @@ def process_video(job_id, video_path, model_path=None):
     """Xử lý toàn bộ video: detect + tracking + vẽ box + ghi log JSONL. Chạy trong thread riêng."""
     job = _get_job(job_id)
     paths = _job_paths(job_id)
+    if model_path:
+        p = Path(model_path)
+        if not p.is_absolute() and not p.exists():
+            cand = BASE_DIR.parent / p
+            if cand.exists():
+                model_path = str(cand)
     try:
         with VideoReader(str(video_path)) as reader:
             detector = Detector(model_path=model_path).load()
