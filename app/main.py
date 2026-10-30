@@ -285,6 +285,11 @@ def run_pipeline(
                             track_id=ev.person_track_id,
                         )
                         logger.info("Uploaded snapshot to MinIO: %s", snapshot_url)
+                        # SEC-18: Cleanup local evidence file once successfully uploaded to MinIO
+                        try:
+                            Path(evidence_res.path).unlink(missing_ok=True)
+                        except Exception:
+                            pass
                     except Exception as m_err:
                         logger.debug("MinIO direct upload skipped (%s), using local reference: %s", m_err, snapshot_url)
 

@@ -56,7 +56,8 @@ def upload_snapshot(image_bytes: bytes, site_code: str, camera_code: str, track_
             length=len(image_bytes),
             content_type="image/jpeg",
         )
-        return f"http://{config.MINIO_ENDPOINT}/{config.MINIO_BUCKET_NAME}/{object_name}"
+        scheme = "https" if getattr(config, "MINIO_SECURE", False) else "http"
+        return f"{scheme}://{config.MINIO_ENDPOINT}/{config.MINIO_BUCKET_NAME}/{object_name}"
     except S3Error as exc:
         logger.error("MinIO upload failed for track %d: %s", track_id, exc)
         raise
@@ -78,7 +79,8 @@ def upload_clip(video_bytes: bytes, site_code: str, camera_code: str, track_id: 
             length=len(video_bytes),
             content_type="video/mp4",
         )
-        return f"http://{config.MINIO_ENDPOINT}/{config.MINIO_BUCKET_NAME}/{object_name}"
+        scheme = "https" if getattr(config, "MINIO_SECURE", False) else "http"
+        return f"{scheme}://{config.MINIO_ENDPOINT}/{config.MINIO_BUCKET_NAME}/{object_name}"
     except S3Error as exc:
         logger.error("MinIO clip upload failed for track %d: %s", track_id, exc)
         raise

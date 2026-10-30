@@ -115,6 +115,18 @@ class ViolationDeduplicator:
             self._last_seen[tid] = t
         self._prev_ids = current_ids
 
+        # SEC-18: Evict stale tracks and emission records older than 2x cooldown_s to prevent unbounded memory growth
+        cutoff = t - (self.cooldown_s * 2.0)
+        for tid in list(self._last_seen.keys()):
+            if self._last_seen[tid] < cutoff:
+                self._canonical.pop(tid, None)
+                self._last_bbox.pop(tid, None)
+                self._last_seen.pop(tid, None)
+
+        for key in list(self._last_emit.keys()):
+            if self._last_emit[key] < cutoff:
+                self._last_emit.pop(key, None)
+
     def filter(self, confirmed_events, detections, t):
         """Lọc các event VI-06 đã xác nhận -> danh sách ViolationEvent được phát.
 

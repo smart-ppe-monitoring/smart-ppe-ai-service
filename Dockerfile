@@ -16,8 +16,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY models/ ./models/
 
-# Create directory for offline buffer SQLite DB
-RUN mkdir -p /data
+# Create directory for offline buffer SQLite DB and non-root appuser
+RUN useradd -u 1000 -m appuser \
+    && mkdir -p /data /app/outputs /app/evidences \
+    && chown -R appuser:appuser /data /app
+
 ENV OFFLINE_BUFFER_DB=/data/offline_buffer.db
+
+USER appuser
 
 CMD ["python", "-m", "app.main"]

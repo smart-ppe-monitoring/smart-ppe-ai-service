@@ -34,8 +34,10 @@ class ConfirmedViolation:
 class ViolationConfirmation:
     """Bộ xác nhận theo thời gian — 1 instance riêng cho mỗi camera/nguồn video."""
 
-    def __init__(self, duration_s=CONFIRMATION_DURATION_S):
+    def __init__(self, duration_s=CONFIRMATION_DURATION_S, max_gap_s=2.0):
         self.duration_s = float(duration_s)
+        # SEC-16: Cap maximum allowable frame interval delta to prevent instant violation on stream reconnect
+        self.max_gap_s = float(max_gap_s)
         # (person, violation_type) -> [start_t, acc, prev_t, was_candidate]
         self._streaks = {}
         self._emitted = set()
@@ -69,7 +71,16 @@ class ViolationConfirmation:
             s = present[pid]
             if key in candidates:
                 if was_cand:
-                    acc += t - prev_t
+                    # SEC-16: Validate time delta, ignore backward timestamps and reset on network gap
+                    dt = t - prev_t
+                    if dt <= 0:
+                        dt = 0.0
+                    elif dt > self.max_gap_s:
+                        # Reset streak on camera reconnect / network drop to prevent instant false confirmation
+                        acc = 0.0
+                        start_t = t
+                        dt = 0.0
+                    acc += dt
                 self._streaks[key] = (start_t, acc, t, True)
                 if key not in self._emitted and acc >= self.duration_s:
                     self._emitted.add(key)
