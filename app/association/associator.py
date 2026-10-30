@@ -100,7 +100,9 @@ def _assign(person_bboxes, candidates_fn, ppe_list):
         ppe_id = id(ppe)
         if person_idx in assigned or ppe_id in used_ppe:
             continue
-        assigned[person_idx] = ppe.track_id
+        # SEC-15: If ppe.track_id is None (untracked secondary detection in YOLO),
+        # assign sentinel -1 instead of None to prevent false positive missing PPE violations
+        assigned[person_idx] = ppe.track_id if ppe.track_id is not None else -1
         used_ppe.add(ppe_id)
     return assigned
 

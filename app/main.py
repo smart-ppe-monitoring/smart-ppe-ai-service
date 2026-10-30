@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import logging
 import re
 from pathlib import Path
+import signal
 import time
 from typing import Optional
 
@@ -156,6 +157,26 @@ def _build_violation_event(
     )
 
 
+_shutdown_requested = False
+
+
+def _handle_signal(sig, frame):
+    global _shutdown_requested
+    logger.info("Received signal %s, initiating graceful shutdown...", sig)
+    _shutdown_requested = True
+
+
+def register_signal_handlers():
+    """Register OS signal handlers for graceful shutdown (SIGINT, SIGTERM)."""
+    for sig_name in ("SIGINT", "SIGTERM"):
+        sig = getattr(signal, sig_name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, _handle_signal)
+            except (ValueError, AttributeError, RuntimeError):
+                pass
+
+
 def mask_credentials(url: Optional[str]) -> str:
     """Mask user credentials in RTSP, HTTP, or other URLs to prevent credential leakage in logs."""
     if not url or not isinstance(url, str):
@@ -209,8 +230,13 @@ def run_pipeline(
 
     last_flush_t = time.time()
 
-    with reader:
-        for num, frame in reader:
+    register_signal_handlers()
+    try:
+        with reader:
+            for num, frame in reader:
+                if _shutdown_requested:
+                    logger.info("Termination signal received. Exiting frame loop cleanly.")
+                    break
             n_frames += 1
             t0 = time.time()
             detections = detector.detect(frame)
@@ -305,9 +331,15 @@ def run_pipeline(
                     num, (t_detect / n_frames * 1000.0) if n_frames > 0 else 0.0,
                 )
 
-    if writer:
-        writer.release()
-        logger.info("Saved annotated video to %s (%d frames)", out_path, n_frames)
+    finally:
+        if writer:
+            writer.release()
+            logger.info("Saved annotated video to %s (%d frames)", out_path, n_frames)
+        flush_producer(timeout=2.0)
+        try:
+            flush_offline_buffer(sync=True)
+        except Exception:
+            pass
 
     # Ensure all buffered Kafka events and offline records are flushed
     flush_producer()
@@ -343,6 +375,7 @@ async def async_main():
 
 
 def main():
+    register_signal_handlers()
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:

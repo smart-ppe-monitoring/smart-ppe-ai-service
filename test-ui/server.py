@@ -1,3 +1,4 @@
+import asyncio
 """Test UI — FastAPI server phục vụ giao diện test 2 khung.
 
 Giao diện này TÁCH BIỆT với core pipeline: chỉ dùng lại các API công khai
@@ -373,23 +374,28 @@ def get_meta(job_id: str):
     return JSONResponse(json.loads(p.read_text(encoding="utf-8")))
 
 
-@app.get("/api/jobs")
-def list_jobs():
+def _scan_jobs_from_disk() -> list[dict]:
     jobs = []
-    for d in RESULT_DIR.iterdir():
-        if d.is_dir():
-            meta_p = d / "meta.json"
-            if meta_p.exists():
-                try:
-                    jobs.append(json.loads(meta_p.read_text(encoding="utf-8")))
-                except Exception:
-                    pass
+    if RESULT_DIR.exists():
+        for d in RESULT_DIR.iterdir():
+            if d.is_dir():
+                meta_p = d / "meta.json"
+                if meta_p.exists():
+                    try:
+                        jobs.append(json.loads(meta_p.read_text(encoding="utf-8")))
+                    except Exception:
+                        pass
     jobs.sort(key=lambda x: x.get("processed_at", ""), reverse=True)
     return jobs
 
 
-@app.get("/api/models")
-def list_models():
+@app.get("/api/jobs")
+async def list_jobs():
+    """SEC-14: Offload blocking filesystem disk traversal and JSON parsing to worker thread."""
+    return await asyncio.to_thread(_scan_jobs_from_disk)
+
+
+def _scan_models_from_disk() -> list[dict]:
     models_dir = BASE_DIR.parent / "models"
     available = []
     if models_dir.exists():
@@ -403,6 +409,12 @@ def list_models():
                 })
     available.sort(key=lambda x: (not x["is_default"], x["name"]))
     return available
+
+
+@app.get("/api/models")
+async def list_models():
+    """SEC-14: Offload model weight file scanning to worker thread."""
+    return await asyncio.to_thread(_scan_models_from_disk)
 
 
 @app.on_event("shutdown")
