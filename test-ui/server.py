@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 import uuid
 from pathlib import Path
@@ -45,9 +46,26 @@ app = FastAPI(title="Video Intelligence — Test UI")
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 
+# Bounded thread pool for video processing (max 2 concurrent jobs to prevent DoS)
+MAX_CONCURRENT_JOBS = 2
+JOB_EXECUTOR = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_JOBS, thread_name_prefix="video-worker")
 
-def _job_paths(job_id):
-    job_dir = RESULT_DIR / job_id
+JOB_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _validate_job_id(job_id: str) -> str:
+    """Validate job_id format and ensure it cannot traverse outside RESULT_DIR."""
+    if not job_id or not JOB_ID_RE.match(job_id):
+        raise HTTPException(400, "Mã job không hợp lệ")
+    resolved_dir = (RESULT_DIR / job_id).resolve()
+    if not resolved_dir.is_relative_to(RESULT_DIR):
+        raise HTTPException(400, "Đường dẫn job không hợp lệ")
+    return job_id
+
+
+def _job_paths(job_id: str):
+    _validate_job_id(job_id)
+    job_dir = (RESULT_DIR / job_id).resolve()
     return {
         "dir": job_dir,
         "video": job_dir / "annotated.mp4",
@@ -85,7 +103,8 @@ def _convert_to_h264(video_path: Path):
         tmp_path.replace(video_path)
 
 
-def _get_job(job_id):
+def _get_job(job_id: str):
+    _validate_job_id(job_id)
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if job is None:
@@ -286,7 +305,7 @@ def start(job_id: str, model: str = None):
             job["status"] = "error"
             job["error"] = "Không tìm thấy file upload"
         raise HTTPException(404, "Không tìm thấy file upload")
-    threading.Thread(target=process_video, args=(job_id, src, model), daemon=True).start()
+    JOB_EXECUTOR.submit(process_video, job_id, src, model)
     return {"status": "processing"}
 
 
@@ -362,6 +381,11 @@ def list_models():
                 })
     available.sort(key=lambda x: (not x["is_default"], x["name"]))
     return available
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    JOB_EXECUTOR.shutdown(wait=False)
 
 
 app.mount("/", StaticFiles(directory=BASE_DIR / "static", html=True), name="static")

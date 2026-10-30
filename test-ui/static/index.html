@@ -144,6 +144,16 @@
 const state = { jobId: null, fps: 25, entries: [], meta: null,
                 personTracks: [], violations: [], evidence: [] };
 
+function escapeHtml(str) {
+  if (str == null) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 const $ = (id) => document.getElementById(id);
 const video = $("video");
 
@@ -154,7 +164,9 @@ $("fileInput").onchange = () => {
   const url = URL.createObjectURL(file);
   video.src = url;
   video.load();
-  $("videoInfo").innerHTML = `<b>Video đã chọn:</b> ${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB) — <i>Bấm nút <b>"Xử lý video"</b> để hệ thống nhận diện AI và gán nhãn!</i>`;
+  const safeName = escapeHtml(file.name);
+  const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+  $("videoInfo").innerHTML = `<b>Video đã chọn:</b> ${safeName} (${sizeMb} MB) — <i>Bấm nút <b>"Xử lý video"</b> để hệ thống nhận diện AI và gán nhãn!</i>`;
   setStatus(`Đã chọn "${file.name}". Bấm "Xử lý video" để bắt đầu nhận diện.`);
 };
 
@@ -208,10 +220,15 @@ async function loadResult() {
     state.evidence.push({ ...ev, frame: e.frame })));
   state.personTracks = computePersonTracks();
 
-  const m = state.meta;
+  const m = state.meta || {};
+  const safeSource = escapeHtml(m.source || "");
+  const safeModel = escapeHtml(m.model || "");
+  const fpsText = typeof m.fps === "number" ? m.fps.toFixed(2) : escapeHtml(m.fps || 0);
+  const w = m.size && m.size[0] != null ? m.size[0] : 0;
+  const h = m.size && m.size[1] != null ? m.size[1] : 0;
   $("videoInfo").innerHTML =
-    `File: <b>${m.source}</b> | ${m.size[0]}x${m.size[1]} | <b>${m.total_frames}</b> frame | ` +
-    `<b>${m.fps.toFixed(2)}</b> fps | Model: <b>${m.model}</b>`;
+    `File: <b>${safeSource}</b> | ${w}x${h} | <b>${escapeHtml(m.total_frames || 0)}</b> frame | ` +
+    `<b>${fpsText}</b> fps | Model: <b>${safeModel}</b>`;
   setStatus("Xong. Phát video và theo dõi log bên phải.");
   renderViolations();
   renderEvidence();
@@ -225,12 +242,22 @@ async function loadResult() {
 const VT_LABEL = { no_helmet: "không đội mũ bảo hộ", no_safety_vest: "không mặc áo phản quang" };
 
 function renderViolations() {
-  const items = state.violations.map(v =>
-    `<div class="confirm-item"><span class="bad">🚨 person #${v.person} — ${VT_LABEL[v.violation_type] || v.violation_type}</span><br>` +
-    `<span style="color:var(--dim)">xác nhận t=${v.confirmed_t.toFixed(2)}s (vi phạm từ t=${v.start_t.toFixed(2)}s, kéo dài ${v.duration_s.toFixed(2)}s — frame ${v.frame}) · ` +
-    `${v.camera_id} · id=${v.event_id}${v.canonical_person !== v.person ? ` · nối từ track #${v.canonical_person}` : ""}</span></div>`).join("");
+  const items = state.violations.map(v => {
+    const personSafe = escapeHtml(v.person);
+    const vtSafe = escapeHtml(VT_LABEL[v.violation_type] || v.violation_type);
+    const camSafe = escapeHtml(v.camera_id);
+    const evIdSafe = escapeHtml(v.event_id);
+    const confT = typeof v.confirmed_t === "number" ? v.confirmed_t.toFixed(2) : escapeHtml(v.confirmed_t);
+    const startT = typeof v.start_t === "number" ? v.start_t.toFixed(2) : escapeHtml(v.start_t);
+    const durS = typeof v.duration_s === "number" ? v.duration_s.toFixed(2) : escapeHtml(v.duration_s);
+    const frameSafe = escapeHtml(v.frame);
+    const canonNote = v.canonical_person !== v.person ? ` · nối từ track #${escapeHtml(v.canonical_person)}` : "";
+    return `<div class="confirm-item"><span class="bad">🚨 person #${personSafe} — ${vtSafe}</span><br>` +
+      `<span style="color:var(--dim)">xác nhận t=${confT}s (vi phạm từ t=${startT}s, kéo dài ${durS}s — frame ${frameSafe}) · ` +
+      `${camSafe} · id=${evIdSafe}${canonNote}</span></div>`;
+  }).join("");
   $("confirmBox").innerHTML = items ||
-    `<span style="color:var(--dim)">chưa có vi phạm nào đủ ${state.meta?.confirmation_duration_s ?? 3} giây liên tục (VI-06) và không trùng trong 30 giây (VI-07)</span>`;
+    `<span style="color:var(--dim)">chưa có vi phạm nào đủ ${escapeHtml(state.meta?.confirmation_duration_s ?? 3)} giây liên tục (VI-06) và không trùng trong 30 giây (VI-07)</span>`;
 }
 
 // ---------- bằng chứng vi phạm (VI-08) ----------
@@ -241,20 +268,25 @@ function renderEvidence() {
   btn.textContent = `Xem bằng chứng / frame lỗi (${state.evidence.length})`;
   const items = state.evidence.map(ev => {
     const v = state.violations.find(x => x.event_id === ev.event_id);
+    const safeJobId = encodeURIComponent(state.jobId || "");
+    const safeEvId = encodeURIComponent(ev.event_id || "");
+    const safeFrame = escapeHtml(ev.frame);
+    const confT = v && typeof v.confirmed_t === "number" ? v.confirmed_t.toFixed(2) : (v ? escapeHtml(v.confirmed_t) : "");
     const info = v
-      ? `person #${v.person} — ${VT_LABEL[v.violation_type] || v.violation_type}<br>` +
-        `<span style="color:var(--dim)">t=${v.confirmed_t.toFixed(2)}s · frame ${ev.frame} · ${v.camera_id} · id=${ev.event_id}</span>`
-      : `<span style="color:var(--dim)">id=${ev.event_id} · frame ${ev.frame}</span>`;
+      ? `person #${escapeHtml(v.person)} — ${escapeHtml(VT_LABEL[v.violation_type] || v.violation_type)}<br>` +
+        `<span style="color:var(--dim)">t=${confT}s · frame ${safeFrame} · ${escapeHtml(v.camera_id)} · id=${escapeHtml(v.event_id)}</span>`
+      : `<span style="color:var(--dim)">id=${escapeHtml(ev.event_id)} · frame ${safeFrame}</span>`;
     if (ev.status === "saved") {
       return `<div class="evidence-item">` +
-        `<a href="/api/jobs/${state.jobId}/evidence/${ev.event_id}.jpg" target="_blank">` +
-        `<img loading="lazy" src="/api/jobs/${state.jobId}/evidence/${ev.event_id}.jpg" alt="bằng chứng ${ev.event_id}"></a>` +
-        `<div class="evidence-info"><span class="good">✔ Đã lưu</span> — ${ev.path}<br>${info}</div></div>`;
+        `<a href="/api/jobs/${safeJobId}/evidence/${safeEvId}.jpg" target="_blank">` +
+        `<img loading="lazy" src="/api/jobs/${safeJobId}/evidence/${safeEvId}.jpg" alt="bằng chứng ${escapeHtml(ev.event_id)}"></a>` +
+        `<div class="evidence-info"><span class="good">✔ Đã lưu</span> — ${escapeHtml(ev.path)}<br>${info}</div></div>`;
     }
+    const seekFrame = parseInt(ev.frame) || 1;
     return `<div class="evidence-item err">` +
-      `<div style="width:160px;height:90px;border:1px dashed var(--red);border-radius:4px;display:flex;align-items:center;justify-content:center;color:var(--red);font-size:11px">frame ${ev.frame}<br>không lưu được ảnh</div>` +
-      `<div class="evidence-info"><span class="bad">LỖI</span> — ${ev.error}<br>${info}<br>` +
-      `<a href="#" onclick="seekToFrame(${ev.frame});return false">▶ nhảy tới frame ${ev.frame} trong video</a></div></div>`;
+      `<div style="width:160px;height:90px;border:1px dashed var(--red);border-radius:4px;display:flex;align-items:center;justify-content:center;color:var(--red);font-size:11px">frame ${safeFrame}<br>không lưu được ảnh</div>` +
+      `<div class="evidence-info"><span class="bad">LỖI</span> — ${escapeHtml(ev.error)}<br>${info}<br>` +
+      `<a href="#" onclick="seekToFrame(${seekFrame});return false">▶ nhảy tới frame ${safeFrame} trong video</a></div></div>`;
   }).join("");
   $("evidenceBox").innerHTML = items;
 }
@@ -299,8 +331,8 @@ function showFrame(frame) {
 function stateSuffix(s) {
   if (!s) return "";
   if (s.status === "COMPLIANT") return ` <span class="good">→ OK</span>`;
-  if (s.status === "VIOLATION_CANDIDATE") return ` <span class="bad">→ VI PHẠM? (${s.violations.join(", ")})</span>`;
-  return ` <span class="c-helmet">→ UNKNOWN (${s.reason})</span>`;
+  if (s.status === "VIOLATION_CANDIDATE") return ` <span class="bad">→ VI PHẠM? (${escapeHtml((s.violations || []).join(", "))})</span>`;
+  return ` <span class="c-helmet">→ UNKNOWN (${escapeHtml(s.reason || "")})</span>`;
 }
 
 function renderAssociations(frame) {
@@ -403,9 +435,9 @@ function renderActiveTracks(frame) {
   $("tracksBox").innerHTML = states.length
     ? states.map(s => {
         let badge = "good", label = "ĐỦ BẢO HỘ";
-        if (s.status === "VIOLATION_CANDIDATE") { badge = "bad"; label = `VI PHẠM? (${s.violations.join(", ")})`; }
-        else if (s.status === "UNKNOWN") { badge = "bad"; label = `UNKNOWN (${s.reason})`; }
-        return `<span class="track-chip">person #${s.track_id} <span class="${badge}">${label}</span></span>`;
+        if (s.status === "VIOLATION_CANDIDATE") { badge = "bad"; label = `VI PHẠM? (${escapeHtml((s.violations || []).join(", "))})`; }
+        else if (s.status === "UNKNOWN") { badge = "bad"; label = `UNKNOWN (${escapeHtml(s.reason || "")})`; }
+        return `<span class="track-chip">person #${escapeHtml(s.track_id)} <span class="${badge}">${label}</span></span>`;
       }).join("")
     : `<span style="color:var(--dim)">không có người nào trong frame này</span>`;
 }
@@ -428,7 +460,12 @@ async function loadAvailableJobs() {
     if (jobs && jobs.length > 0) {
       sel.style.display = "inline-block";
       sel.innerHTML = '<option value="">-- Hoặc xem video đã xử lý sẵn --</option>' +
-        jobs.map(j => `<option value="${j.job_id}">${j.source || j.job_id} (${j.total_frames || '?'} frame)</option>`).join("");
+        jobs.map(j => {
+          const safeJobId = escapeHtml(j.job_id || "");
+          const safeSource = escapeHtml(j.source || j.job_id || "");
+          const safeFrames = escapeHtml(j.total_frames || "?");
+          return `<option value="${safeJobId}">${safeSource} (${safeFrames} frame)</option>`;
+        }).join("");
       sel.onchange = async (e) => {
         if (!e.target.value) return;
         state.jobId = e.target.value;
@@ -448,9 +485,12 @@ async function loadAvailableModels() {
     const models = await r.json();
     const sel = $("modelSelector");
     if (models && models.length > 0 && sel) {
-      sel.innerHTML = models.map(m =>
-        `<option value="${m.path}" ${m.is_default ? "selected" : ""}>Model: ${m.name} (${m.size_mb} MB)</option>`
-      ).join("");
+      sel.innerHTML = models.map(m => {
+        const safePath = escapeHtml(m.path || "");
+        const safeName = escapeHtml(m.name || "");
+        const safeSize = escapeHtml(m.size_mb || 0);
+        return `<option value="${safePath}" ${m.is_default ? "selected" : ""}>Model: ${safeName} (${safeSize} MB)</option>`;
+      }).join("");
     }
   } catch (e) {
     console.error("Không thể tải danh sách models:", e);
