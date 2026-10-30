@@ -9,6 +9,8 @@ Chạy (từ thư mục gốc video-intelligence):
     → mở http://127.0.0.1:8000
 """
 import json
+import logging
+import os
 import re
 import shutil
 import subprocess
@@ -43,6 +45,7 @@ RESULT_DIR.mkdir(exist_ok=True)
 VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
 
 app = FastAPI(title="Video Intelligence — Test UI")
+logger = logging.getLogger("test_ui_server")
 
 JOBS = {}
 JOBS_LOCK = threading.Lock()
@@ -99,9 +102,38 @@ def _convert_to_h264(video_path: Path):
         "-movflags", "+faststart",
         str(tmp_path),
     ]
-    res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if res.returncode == 0 and tmp_path.exists():
-        tmp_path.replace(video_path)
+    try:
+        res = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+        if res.returncode == 0 and tmp_path.exists():
+            # SEC-23: Handle Windows file lock collision during atomic replace
+            for attempt in range(5):
+                try:
+                    if os.name == "nt" and video_path.exists():
+                        try:
+                            video_path.unlink(missing_ok=True)
+                        except PermissionError:
+                            pass
+                    tmp_path.replace(video_path)
+                    break
+                except PermissionError:
+                    if attempt < 4:
+                        time.sleep(0.5)
+                    else:
+                        logger.warning("Could not replace %s with %s due to Windows file lock", video_path, tmp_path)
+    except subprocess.TimeoutExpired:
+        logger.error("FFmpeg transcoding timed out after 120s for %s", video_path)
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error("FFmpeg transcoding failed for %s: %s", video_path, e)
 
 
 def _get_job(job_id: str):
@@ -276,11 +308,37 @@ MAX_UPLOAD_SIZE_BYTES = 500 * 1024 * 1024  # 500 MB limit to prevent Memory Exha
 CHUNK_SIZE_BYTES = 1024 * 1024  # 1 MB chunks streaming
 
 
+def _is_valid_video_magic(header: bytes) -> bool:
+    """Validate initial header bytes against known video container signatures (MP4, MOV, AVI, MKV)."""
+    if len(header) < 12:
+        return False
+    # MP4 / M4V / MOV (ISOBMFF / QuickTime boxes: ftyp, moov, mdat, wide, skip, free)
+    if header[4:8] in (b"ftyp", b"moov", b"mdat", b"wide", b"skip", b"free"):
+        return True
+    # QuickTime box lengths with qt brand at offset 4
+    if header[:4] in (b"\x00\x00\x00\x14", b"\x00\x00\x00\x20"):
+        return True
+    # AVI (RIFF ... AVI  / AVIX)
+    if header[:4] == b"RIFF" and header[8:12] in (b"AVI ", b"AVIX"):
+        return True
+    # Matroska MKV / WebM (EBML header \x1a\x45\xdf\xa3)
+    if header[:4] == b"\x1a\x45\xdf\xa3":
+        return True
+    return False
+
+
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
     suffix = Path(file.filename or "video.mp4").suffix.lower()
     if suffix not in VIDEO_EXT:
         raise HTTPException(400, f"File không phải video. Hỗ trợ: {', '.join(sorted(VIDEO_EXT))}")
+
+    # SEC-24: Validate file magic header before saving to disk
+    header = await file.read(64)
+    await file.seek(0)
+    if not _is_valid_video_magic(header):
+        raise HTTPException(400, "Định dạng nội dung file không hợp lệ (không khớp signature video)")
+
     job_id = uuid.uuid4().hex[:12]
     dest = (UPLOAD_DIR / f"{job_id}{suffix}").resolve()
     if not dest.is_relative_to(UPLOAD_DIR):

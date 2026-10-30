@@ -11,6 +11,7 @@ import argparse
 import asyncio
 from datetime import datetime, timezone
 import logging
+import os
 import re
 from pathlib import Path
 import signal
@@ -278,7 +279,7 @@ def run_pipeline(
 
                 # 1. Save evidence snapshot locally
                 evidence_res = save_evidence(frame, detections, ev, config.EVIDENCE_DIR)
-                snapshot_url = evidence_res.path
+                snapshot_url = None
 
                 # 2. Upload to MinIO if client is ready, otherwise use local path
                 if evidence_res.status == "saved" and evidence_res.path:
@@ -299,7 +300,13 @@ def run_pipeline(
                         except Exception:
                             pass
                     except Exception as m_err:
-                        logger.debug("MinIO direct upload skipped (%s), using local reference: %s", m_err, snapshot_url)
+                        logger.debug("MinIO direct upload skipped (%s), using local reference: %s", m_err, evidence_res.path)
+
+                # SEC-25: Construct valid HTTP edge gateway URL if MinIO upload failed or was skipped
+                if not snapshot_url or not (str(snapshot_url).startswith("http://") or str(snapshot_url).startswith("https://")):
+                    evidence_file = Path(evidence_res.path).name if evidence_res.path else f"{ev.event_id}.jpg"
+                    edge_base = os.getenv("EDGE_GATEWAY_URL", f"{config.BACKEND_BASE_URL}/evidences").rstrip("/")
+                    snapshot_url = f"{edge_base}/{config.SITE_CODE}/{ev.camera_id}/{evidence_file}"
 
                 # 3. Build contract-compliant event
                 model_name = Path(config.YOLO_MODEL_PATH).name
@@ -307,7 +314,7 @@ def run_pipeline(
                     ev=ev,
                     frame_w=frame_w,
                     frame_h=frame_h,
-                    snapshot_url=snapshot_url or f"file:///{evidence_res.path}",
+                    snapshot_url=snapshot_url,
                     all_detections=detections,
                     model_name=model_name,
                 )
