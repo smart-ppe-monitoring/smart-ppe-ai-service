@@ -31,33 +31,13 @@ def get_client() -> Minio:
 
 
 def ensure_bucket_exists(client: Minio, bucket_name: str) -> None:
-    """Ensure the target bucket exists and has public read policy for evidence images."""
+    """Ensure the target bucket exists with secure private access by default."""
     try:
         if not client.bucket_exists(bucket_name):
             client.make_bucket(bucket_name)
             logger.info("Created MinIO bucket: %s", bucket_name)
-
-        import json
-        policy = {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Principal": {"AWS": ["*"]},
-                    "Action": ["s3:GetBucketLocation", "s3:ListBucket"],
-                    "Resource": [f"arn:aws:s3:::{bucket_name}"],
-                },
-                {
-                    "Effect": "Allow",
-                    "Principal": {"AWS": ["*"]},
-                    "Action": ["s3:GetObject"],
-                    "Resource": [f"arn:aws:s3:::{bucket_name}/*"],
-                },
-            ],
-        }
-        client.set_bucket_policy(bucket_name, json.dumps(policy))
     except Exception as err:
-        logger.debug("Bucket policy setup info: %s", err)
+        logger.debug("Bucket check/creation info: %s", err)
 
 
 def upload_snapshot(image_bytes: bytes, site_code: str, camera_code: str, track_id: int) -> str:

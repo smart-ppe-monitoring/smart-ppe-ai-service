@@ -33,6 +33,7 @@ from app.video.visualizer import draw_detections
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
+MODELS_DIR = (BASE_DIR.parent / "models").resolve()
 RESULT_DIR = BASE_DIR / "results"
 UPLOAD_DIR.mkdir(exist_ok=True)
 RESULT_DIR.mkdir(exist_ok=True)
@@ -106,11 +107,11 @@ def process_video(job_id, video_path, model_path=None):
     job = _get_job(job_id)
     paths = _job_paths(job_id)
     if model_path:
-        p = Path(model_path)
-        if not p.is_absolute() and not p.exists():
-            cand = BASE_DIR.parent / p
-            if cand.exists():
-                model_path = str(cand)
+        cand = (MODELS_DIR / Path(model_path).name).resolve()
+        if cand.exists() and cand.is_relative_to(MODELS_DIR) and cand.suffix.lower() in (".pt", ".onnx"):
+            model_path = str(cand)
+        else:
+            model_path = None
     try:
         with VideoReader(str(video_path)) as reader:
             detector = Detector(model_path=model_path).load()
@@ -267,6 +268,13 @@ async def upload(file: UploadFile = File(...)):
 
 @app.post("/api/jobs/{job_id}/start")
 def start(job_id: str, model: str = None):
+    if not re.match(r"^[a-zA-Z0-9_-]+$", job_id):
+        raise HTTPException(400, "Mã job không hợp lệ")
+    if model:
+        model_cand = (MODELS_DIR / Path(model).name).resolve()
+        if not model_cand.exists() or not model_cand.is_relative_to(MODELS_DIR) or model_cand.suffix.lower() not in (".pt", ".onnx"):
+            raise HTTPException(400, f"Mô hình không hợp lệ hoặc không tồn tại trong thư mục models: {model}")
+        model = str(model_cand)
     job = _get_job(job_id)
     with JOBS_LOCK:
         if job.get("status") == "processing":

@@ -16,6 +16,7 @@ load_dotenv()
 
 # ─── Backend API ──────────────────────────────────────────────────────────────
 BACKEND_BASE_URL: str = os.getenv("BACKEND_BASE_URL", "http://localhost:8893")
+INTERNAL_SERVICE_TOKEN: str = os.getenv("INTERNAL_SERVICE_TOKEN", os.getenv("AI_SERVICE_TOKEN", ""))
 
 # ─── Kafka ────────────────────────────────────────────────────────────────────
 KAFKA_BROKER: str = os.getenv("KAFKA_BROKER", "localhost:9092")

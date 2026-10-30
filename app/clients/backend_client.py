@@ -18,6 +18,13 @@ from app.constants import (
 logger = logging.getLogger(__name__)
 
 
+def _get_auth_headers() -> dict[str, str]:
+    token = getattr(config, "INTERNAL_SERVICE_TOKEN", "")
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
+
+
 class SafetyRulesConfig:
     def __init__(self, confidence: float, confirmation_s: int, cooldown_s: int,
                  enable_no_helmet: bool = True, enable_no_vest: bool = True,
@@ -45,7 +52,7 @@ async def fetch_system_default_rules() -> SafetyRulesConfig:
     url = f"{config.BACKEND_BASE_URL}{HTTP_SAFETY_RULES_DEFAULT}"
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(url)
+            resp = await client.get(url, headers=_get_auth_headers())
             resp.raise_for_status()
             data = resp.json().get("data", {})
             rules_dict = data.get("rules") if isinstance(data.get("rules"), dict) else {}
@@ -70,7 +77,7 @@ async def fetch_effective_rules(camera_id: str, site_id: str) -> SafetyRulesConf
     url = f"{config.BACKEND_BASE_URL}{HTTP_SAFETY_RULES_EFFECTIVE}"
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(url, params={"cameraId": camera_id, "siteId": site_id})
+            resp = await client.get(url, params={"cameraId": camera_id, "siteId": site_id}, headers=_get_auth_headers())
             resp.raise_for_status()
             data = resp.json().get("data", {})
             rules_dict = data.get("rules") if isinstance(data.get("rules"), dict) else {}

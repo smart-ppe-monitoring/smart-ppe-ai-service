@@ -208,9 +208,18 @@ def run_pipeline(
             detections = detector.detect(frame)
             t_detect += time.time() - t0
 
+            # Determine active required PPE rules based on dynamic rules configuration
+            active_ppe = []
+            if not rules or getattr(rules, "enable_no_helmet", True):
+                active_ppe.append("helmet")
+            if not rules or getattr(rules, "enable_no_vest", True):
+                active_ppe.append("safety_vest")
+
             associations = associate(detections)
             frame_h, frame_w = frame.shape[:2]
-            person_states = evaluate_safety(detections, associations, frame_w, frame_h)
+            person_states = evaluate_safety(
+                detections, associations, frame_w, frame_h, required_ppe=tuple(active_ppe)
+            )
 
             t_frame = (num - 1) / (reader.fps if reader.fps > 0 else 25.0)
             confirmed = confirmation.update(t_frame, person_states)

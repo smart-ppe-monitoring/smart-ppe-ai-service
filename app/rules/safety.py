@@ -70,8 +70,9 @@ def _judgeable(assoc, frame_w):
     return out
 
 
-def evaluate(detections, associations, frame_w, frame_h):
+def evaluate(detections, associations, frame_w, frame_h, required_ppe=None):
     """Tính trạng thái VI-05 cho từng người (kết quả ghép VI-04) trong một frame."""
+    active_required = required_ppe if required_ppe is not None else REQUIRED_PPE
     persons = {d.track_id: d for d in detections
                if d.class_name == PERSON and d.track_id is not None}
     states = []
@@ -96,7 +97,7 @@ def evaluate(detections, associations, frame_w, frame_h):
         judgeable = _judgeable(a, frame_w)
         violations = []
         unjudgeable = []
-        for cls in REQUIRED_PPE:
+        for cls in active_required:
             if not judgeable[cls]:
                 unjudgeable.append(cls)
                 continue
