@@ -271,14 +271,36 @@ def process_video(job_id, video_path, model_path=None):
             job.update(status="error", error=f"{type(e).__name__}: {e}")
 
 
+MAX_UPLOAD_SIZE_BYTES = 500 * 1024 * 1024  # 500 MB limit to prevent Memory Exhaustion DoS
+CHUNK_SIZE_BYTES = 1024 * 1024  # 1 MB chunks streaming
+
+
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
     suffix = Path(file.filename or "video.mp4").suffix.lower()
     if suffix not in VIDEO_EXT:
         raise HTTPException(400, f"File không phải video. Hỗ trợ: {', '.join(sorted(VIDEO_EXT))}")
     job_id = uuid.uuid4().hex[:12]
-    dest = UPLOAD_DIR / f"{job_id}{suffix}"
-    dest.write_bytes(await file.read())
+    dest = (UPLOAD_DIR / f"{job_id}{suffix}").resolve()
+    if not dest.is_relative_to(UPLOAD_DIR):
+        raise HTTPException(400, "Đường dẫn file không hợp lệ")
+
+    total_size = 0
+    try:
+        with open(dest, "wb") as f_out:
+            while chunk := await file.read(CHUNK_SIZE_BYTES):
+                total_size += len(chunk)
+                if total_size > MAX_UPLOAD_SIZE_BYTES:
+                    raise HTTPException(
+                        413,
+                        f"Dung lượng file vượt quá giới hạn tối đa cho phép ({MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB)."
+                    )
+                f_out.write(chunk)
+    except Exception:
+        if dest.exists():
+            dest.unlink(missing_ok=True)
+        raise
+
     _job_paths(job_id)["dir"].mkdir(parents=True, exist_ok=True)
     with JOBS_LOCK:
         JOBS[job_id] = {"status": "uploaded", "progress": 0.0, "source": file.filename}

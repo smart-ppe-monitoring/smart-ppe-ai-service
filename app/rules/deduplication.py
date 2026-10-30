@@ -93,8 +93,19 @@ class ViolationDeduplicator:
                     best, best_dist, best_bbox = can_id, d, old_bbox
             if best is not None and best_bbox is not None:
                 ref_h = max(bbox[3] - bbox[1], best_bbox[3] - best_bbox[1])
-                if best_dist <= self.id_switch_max_dist_ratio * ref_h:
+                h_new = bbox[3] - bbox[1]
+                h_old = best_bbox[3] - best_bbox[1]
+                w_new = bbox[2] - bbox[0]
+                w_old = best_bbox[2] - best_bbox[0]
+                aspect_new = w_new / h_new if h_new > 0 else 0
+                aspect_old = w_old / h_old if h_old > 0 else 0
+                aspect_diff = abs(aspect_new - aspect_old)
+                h_ratio = min(h_new, h_old) / max(h_new, h_old) if ref_h > 0 else 0
+
+                # SEC-10: Verify bounding box aspect ratio and height consistency to prevent spatial track collision
+                if best_dist <= self.id_switch_max_dist_ratio * ref_h and aspect_diff < 0.20 and h_ratio > 0.70:
                     self._canonical[tid] = best  # nối: cùng một người
+                    del self._recently_lost[best]  # loại bỏ đã ghép để tránh track tiếp theo bị gán nhầm cùng ID
                     continue
             self._canonical[tid] = self._next_canonical
             self._next_canonical += 1

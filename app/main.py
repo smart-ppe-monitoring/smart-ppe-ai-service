@@ -11,6 +11,7 @@ import argparse
 import asyncio
 from datetime import datetime, timezone
 import logging
+import re
 from pathlib import Path
 import time
 from typing import Optional
@@ -155,6 +156,13 @@ def _build_violation_event(
     )
 
 
+def mask_credentials(url: Optional[str]) -> str:
+    """Mask user credentials in RTSP, HTTP, or other URLs to prevent credential leakage in logs."""
+    if not url or not isinstance(url, str):
+        return str(url) if url is not None else ""
+    return re.sub(r"://([^:@\s]+):(.+)@([^/@\s]+)", r"://\1:***@\3", url)
+
+
 def run_pipeline(
     source: Optional[str] = None,
     camera_id: str = "CAM-01",
@@ -168,11 +176,11 @@ def run_pipeline(
     cooldown_duration = rules.cooldown_s if rules else config.COOLDOWN_DURATION_S
     conf_threshold = rules.confidence if rules else config.CONFIDENCE_THRESHOLD
 
-    logger.info("Initializing VideoReader for source: %s", actual_source)
+    logger.info("Initializing VideoReader for source: %s", mask_credentials(actual_source))
     try:
         reader = VideoReader(actual_source)
     except VideoSourceError as err:
-        logger.error("Failed to open video source: %s", err)
+        logger.error("Failed to open video source: %s", mask_credentials(str(err)))
         return 1
 
     try:

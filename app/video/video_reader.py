@@ -1,3 +1,4 @@
+import re
 """VI-01: Đọc video từ file / webcam / RTSP.
 
 Xử lý: lỗi mở nguồn, frame rỗng, hết video, giải phóng tài nguyên.
@@ -13,6 +14,13 @@ from app import config
 class VideoSourceError(Exception):
     """Không mở được nguồn video hoặc lỗi nghiêm trọng khi đọc."""
 
+
+
+def mask_source(source) -> str:
+    """Mask credentials in RTSP/HTTP URL string."""
+    if isinstance(source, str):
+        return re.sub(r"://([^:@\s]+):(.+)@([^/@\s]+)", r"://\1:***@\3", source)
+    return str(source)
 
 class VideoReader:
     """Iterator đọc frame tuần tự từ một nguồn video."""
@@ -44,7 +52,7 @@ class VideoReader:
         if not self._cap.isOpened():
             self._cap.release()
             raise VideoSourceError(
-                f"Không mở được nguồn video: {self.source!r}. "
+                f"Không mở được nguồn video: {mask_source(self.source)!r}. "
                 "Kiểm tra đường dẫn file, quyền truy cập hoặc URL RTSP/index webcam."
             )
         self._opened = True
@@ -113,7 +121,7 @@ class VideoReader:
 def read_and_report(source, show_every=100):
     """Chạy thử VI-01: đọc hết nguồn, in thông tin và tốc độ đọc thực tế."""
     with VideoReader(source) as reader:
-        print(f"Nguồn       : {reader.source}")
+        print(f"Nguồn       : {mask_source(reader.source)}")
         print(f"Kích thước  : {reader.size[0]}x{reader.size[1]}" if reader.size else "Kích thước  : N/A")
         print(f"FPS khai báo: {reader.fps:.2f} | Tổng frame (file): {reader.frame_count}")
         t0 = time.time()
