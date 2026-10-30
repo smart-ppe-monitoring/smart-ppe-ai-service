@@ -101,14 +101,22 @@ def _build_violation_event(
             height=float(target_person.bbox[3] - target_person.bbox[1]),
         )
 
-    # Convert person detections to schema format
+    # Convert person and secondary PPE equipment detections to schema format
     schema_detections = []
     for d in all_detections:
-        if d.track_id is None:
-            continue
-        cls_label = LABEL_PERSON if d.class_name == "person" else (
-            LABEL_HARD_HAT if d.class_name == "helmet" else LABEL_SAFETY_VEST
-        )
+        cls_name = getattr(d, "class_name", "")
+        if cls_name == "person":
+            cls_label = LABEL_PERSON
+        elif cls_name in ("helmet", "hard_hat"):
+            cls_label = LABEL_HARD_HAT
+        elif cls_name in ("safety_vest", "vest"):
+            cls_label = LABEL_SAFETY_VEST
+        else:
+            cls_label = cls_name.upper()
+
+        raw_track_id = getattr(d, "track_id", None)
+        track_id_val = int(raw_track_id) if raw_track_id is not None else None
+
         schema_detections.append(
             SchemaDetection(
                 classLabel=cls_label,
@@ -119,7 +127,7 @@ def _build_violation_event(
                     width=float(d.bbox[2] - d.bbox[0]),
                     height=float(d.bbox[3] - d.bbox[1]),
                 ),
-                trackId=int(d.track_id),
+                trackId=track_id_val,
             )
         )
 

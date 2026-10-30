@@ -6,7 +6,7 @@ Mọi payload gửi về Backend (Kafka hoặc HTTP) phải validate qua model n
 from __future__ import annotations
 
 from typing import List, Optional
-from pydantic import BaseModel, HttpUrl, Field, ConfigDict
+from pydantic import BaseModel, HttpUrl, Field, ConfigDict, model_serializer
 from app.constants import (
     CONTRACT_VERSION,
     DEFAULT_FRAME_WIDTH,
@@ -38,9 +38,16 @@ class Detection(BaseModel):
     classLabel: str = Field(alias="class")   # PERSON | HARD_HAT | SAFETY_VEST
     confidence: float
     box: BoundingBox
-    trackId: int
+    trackId: Optional[int] = None
 
     model_config = ConfigDict(populate_by_name=True)
+
+    @model_serializer(mode="wrap")
+    def serialize_model(self, handler):
+        res = handler(self)
+        if isinstance(res, dict) and res.get("trackId") is None:
+            res.pop("trackId", None)
+        return res
 
 
 class ViolationItem(BaseModel):

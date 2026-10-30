@@ -26,7 +26,8 @@ class VideoReader:
     """Iterator đọc frame tuần tự từ một nguồn video."""
 
     def __init__(self, source, empty_frame_tolerance=None):
-        self.source = config.resolve_source(source) or config.DEFAULT_SOURCE
+        resolved = config.resolve_source(source)
+        self.source = resolved if resolved is not None else config.DEFAULT_SOURCE
         if not self.source and self.source != 0:
             raise VideoSourceError(
                 "Chưa cấu hình nguồn video. Đặt biến môi trường VIDEO_SOURCE "
@@ -38,7 +39,13 @@ class VideoReader:
             else config.EMPTY_FRAME_TOLERANCE
         )
         self._cap = None
-        self._is_stream = isinstance(self.source, int) or str(self.source).startswith("rtsp")
+        src_str = str(self.source).strip().lower()
+        stream_protocols = ("rtsp://", "rtsps://", "http://", "https://", "rtmp://", "rtmps://", "rtsp:")
+        self._is_stream = (
+            isinstance(self.source, int)
+            or src_str.startswith(stream_protocols)
+            or ".m3u8" in src_str
+        )
         self._opened = False
         self._frames_read = 0
         self._empty_streak = 0
@@ -98,15 +105,17 @@ class VideoReader:
         """Trả về (frame_number, frame); frame=None khi hết video."""
         if not self._opened:
             raise VideoSourceError("Chưa mở nguồn video — gọi open() hoặc dùng with.")
-        ok, frame = self._cap.read()
-        if not ok or frame is None:
-            self._empty_streak += 1
-            if not self._is_stream or self._empty_streak > self.empty_frame_tolerance:
-                return None  # hết file, hoặc stream mất tín hiệu quá lâu
-            return self.read()  # stream: bỏ qua frame rỗng thoáng qua
-        self._empty_streak = 0
-        self._frames_read += 1
-        return self._frames_read, frame
+
+        while True:
+            ok, frame = self._cap.read()
+            if not ok or frame is None:
+                self._empty_streak += 1
+                if not self._is_stream or self._empty_streak > self.empty_frame_tolerance:
+                    return None  # hết file, hoặc stream mất tín hiệu quá lâu
+                continue  # stream: bỏ qua frame rỗng thoáng qua
+            self._empty_streak = 0
+            self._frames_read += 1
+            return self._frames_read, frame
 
     def __iter__(self):
         return self
