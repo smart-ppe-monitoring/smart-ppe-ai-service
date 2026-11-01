@@ -31,7 +31,7 @@ from app.constants import (
     SEVERITY_HIGH,
     SEVERITY_MEDIUM,
 )
-from app.clients.backend_client import fetch_system_default_rules, SafetyRulesConfig
+from app.clients.backend_client import fetch_system_default_rules, fetch_effective_rules, SafetyRulesConfig
 from app.detection.detector import Detector, DetectorError
 from app.association.associator import associate
 from app.rules.safety import evaluate as evaluate_safety
@@ -252,23 +252,25 @@ def run_pipeline(
             t_detect += time.time() - t0
 
             # Determine active required PPE rules based on dynamic rules configuration
-            active_ppe = []
-            if not rules or getattr(rules, "enable_no_helmet", True):
-                active_ppe.append("helmet")
-            if not rules or getattr(rules, "enable_no_vest", True):
-                active_ppe.append("safety_vest")
+            enable_helmet = getattr(rules, "enable_no_helmet", True) if rules else True
+            enable_vest = getattr(rules, "enable_no_vest", True) if rules else True
 
             associations = associate(detections)
             frame_h, frame_w = frame.shape[:2]
             person_states = evaluate_safety(
-                detections, associations, frame_w, frame_h, required_ppe=tuple(active_ppe)
+                detections,
+                associations,
+                frame_w,
+                frame_h,
+                enable_no_helmet=enable_helmet,
+                enable_no_vest=enable_vest,
             )
 
             t_frame = (num - 1) / (reader.fps if reader.fps > 0 else 25.0)
             confirmed = confirmation.update(t_frame, person_states)
 
             # Draw visual bboxes on output frame
-            draw_detections(frame, detections)
+            draw_detections(frame, detections, person_states=person_states)
 
             # Filter duplicates and produce final violations
             for ev in dedup.filter(confirmed, detections, t_frame):
@@ -371,17 +373,18 @@ def run_pipeline(
 async def async_main():
     parser = argparse.ArgumentParser(description="smart-ppe-ai-service — Video Intelligence Pipeline")
     parser.add_argument("--source", default=None, help="Video source (file path, RTSP URL, or webcam index)")
-    parser.add_argument("--camera-id", default="CAM-01", help="Camera identifier code")
+    parser.add_argument("--camera-id", default=os.getenv("CAMERA_ID", "CAM-01"), help="Camera identifier code")
+    parser.add_argument("--site-id", default=os.getenv("SITE_ID", config.SITE_CODE), help="Site identifier code or UUID")
     parser.add_argument("--out-dir", default="outputs", help="Directory for annotated output videos")
     parser.add_argument("--show-every", type=int, default=50, help="Log progress every N frames")
     args = parser.parse_args()
 
-    # Step 1: Dynamic safety rules retrieval from Backend
-    logger.info("Fetching dynamic safety rules from Backend...")
-    rules = await fetch_system_default_rules()
+    # Step 1: Dynamic safety rules retrieval from Backend (Effective rules for camera)
+    logger.info("Fetching dynamic safety rules from Backend for camera=%s, site=%s...", args.camera_id, args.site_id)
+    rules = await fetch_effective_rules(camera_id=args.camera_id, site_id=args.site_id)
     logger.info(
-        "Effective rules: confidence=%.2f, confirmation=%ds, cooldown=%ds",
-        rules.confidence, rules.confirmation_s, rules.cooldown_s,
+        "Effective rules: confidence=%.2f, confirmation=%.1fs, cooldown=%ds, helmet=%s, vest=%s",
+        rules.confidence, rules.confirmation_s, rules.cooldown_s, rules.enable_no_helmet, rules.enable_no_vest,
     )
 
     # Step 2: Run pipeline

@@ -26,20 +26,21 @@ def _get_auth_headers() -> dict[str, str]:
 
 
 class SafetyRulesConfig:
-    def __init__(self, confidence: float, confirmation_s: int, cooldown_s: int,
+    def __init__(self, confidence: float, confirmation_s: float, cooldown_s: int,
                  enable_no_helmet: bool = True, enable_no_vest: bool = True,
-                 enable_restricted_area: bool = False):
-        self.confidence = confidence
-        self.confirmation_s = confirmation_s
-        self.cooldown_s = cooldown_s
+                 enable_restricted_area: bool = False, model_path: Optional[str] = None):
+        self.confidence = float(confidence)
+        self.confirmation_s = float(confirmation_s)
+        self.cooldown_s = int(cooldown_s)
         self.enable_no_helmet = enable_no_helmet
         self.enable_no_vest = enable_no_vest
         self.enable_restricted_area = enable_restricted_area
+        self.model_path = model_path
 
 
 _FALLBACK = SafetyRulesConfig(
     confidence=DEFAULT_CONFIDENCE_THRESHOLD,
-    confirmation_s=DEFAULT_CONFIRMATION_DURATION_S,
+    confirmation_s=float(DEFAULT_CONFIRMATION_DURATION_S),
     cooldown_s=DEFAULT_COOLDOWN_DURATION_S,
 )
 
@@ -58,11 +59,12 @@ async def fetch_system_default_rules() -> SafetyRulesConfig:
             rules_dict = data.get("rules") if isinstance(data.get("rules"), dict) else {}
             return SafetyRulesConfig(
                 confidence=float(data.get("confidenceThreshold", DEFAULT_CONFIDENCE_THRESHOLD)),
-                confirmation_s=int(data.get("confirmationDuration", DEFAULT_CONFIRMATION_DURATION_S)),
+                confirmation_s=float(data.get("confirmationDuration", DEFAULT_CONFIRMATION_DURATION_S)),
                 cooldown_s=int(data.get("cooldownDuration", DEFAULT_COOLDOWN_DURATION_S)),
                 enable_no_helmet=data.get("enableNoHelmet", rules_dict.get("enableNoHelmet", True)),
                 enable_no_vest=data.get("enableNoVest", rules_dict.get("enableNoVest", True)),
                 enable_restricted_area=data.get("enableRestrictedArea", rules_dict.get("enableRestrictedArea", False)),
+                model_path=data.get("modelVersionId", rules_dict.get("modelVersionId")),
             )
     except Exception as exc:
         logger.warning("Failed to fetch safety rules from Backend (%s). Using fallback defaults.", exc)
@@ -83,11 +85,12 @@ async def fetch_effective_rules(camera_id: str, site_id: str) -> SafetyRulesConf
             rules_dict = data.get("rules") if isinstance(data.get("rules"), dict) else {}
             return SafetyRulesConfig(
                 confidence=float(data.get("confidenceThreshold", DEFAULT_CONFIDENCE_THRESHOLD)),
-                confirmation_s=int(data.get("confirmationDuration", DEFAULT_CONFIRMATION_DURATION_S)),
+                confirmation_s=float(data.get("confirmationDuration", DEFAULT_CONFIRMATION_DURATION_S)),
                 cooldown_s=int(data.get("cooldownDuration", DEFAULT_COOLDOWN_DURATION_S)),
                 enable_no_helmet=data.get("enableNoHelmet", rules_dict.get("enableNoHelmet", True)),
                 enable_no_vest=data.get("enableNoVest", rules_dict.get("enableNoVest", True)),
                 enable_restricted_area=data.get("enableRestrictedArea", rules_dict.get("enableRestrictedArea", False)),
+                model_path=data.get("modelVersionId", rules_dict.get("modelVersionId")),
             )
     except Exception as exc:
         logger.warning("Effective rules fetch failed (%s). Falling back to system default.", exc)
