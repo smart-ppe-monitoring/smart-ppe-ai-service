@@ -1,3 +1,4 @@
+import re
 """VI-01: Đọc video từ file / webcam / RTSP.
 
 Xử lý: lỗi mở nguồn, frame rỗng, hết video, giải phóng tài nguyên.
@@ -14,11 +15,19 @@ class VideoSourceError(Exception):
     """Không mở được nguồn video hoặc lỗi nghiêm trọng khi đọc."""
 
 
+
+def mask_source(source) -> str:
+    """Mask credentials in RTSP/HTTP URL string."""
+    if isinstance(source, str):
+        return re.sub(r"://([^:@\s]+):(.+)@([^/@\s]+)", r"://\1:***@\3", source)
+    return str(source)
+
 class VideoReader:
     """Iterator đọc frame tuần tự từ một nguồn video."""
 
     def __init__(self, source, empty_frame_tolerance=None):
-        self.source = config.resolve_source(source) or config.DEFAULT_SOURCE
+        resolved = config.resolve_source(source)
+        self.source = resolved if resolved is not None else config.DEFAULT_SOURCE
         if not self.source and self.source != 0:
             raise VideoSourceError(
                 "Chưa cấu hình nguồn video. Đặt biến môi trường VIDEO_SOURCE "
@@ -30,7 +39,13 @@ class VideoReader:
             else config.EMPTY_FRAME_TOLERANCE
         )
         self._cap = None
-        self._is_stream = isinstance(self.source, int) or str(self.source).startswith("rtsp")
+        src_str = str(self.source).strip().lower()
+        stream_protocols = ("rtsp://", "rtsps://", "http://", "https://", "rtmp://", "rtmps://", "rtsp:")
+        self._is_stream = (
+            isinstance(self.source, int)
+            or src_str.startswith(stream_protocols)
+            or ".m3u8" in src_str
+        )
         self._opened = False
         self._frames_read = 0
         self._empty_streak = 0
@@ -44,7 +59,7 @@ class VideoReader:
         if not self._cap.isOpened():
             self._cap.release()
             raise VideoSourceError(
-                f"Không mở được nguồn video: {self.source!r}. "
+                f"Không mở được nguồn video: {mask_source(self.source)!r}. "
                 "Kiểm tra đường dẫn file, quyền truy cập hoặc URL RTSP/index webcam."
             )
         self._opened = True
@@ -90,15 +105,17 @@ class VideoReader:
         """Trả về (frame_number, frame); frame=None khi hết video."""
         if not self._opened:
             raise VideoSourceError("Chưa mở nguồn video — gọi open() hoặc dùng with.")
-        ok, frame = self._cap.read()
-        if not ok or frame is None:
-            self._empty_streak += 1
-            if not self._is_stream or self._empty_streak > self.empty_frame_tolerance:
-                return None  # hết file, hoặc stream mất tín hiệu quá lâu
-            return self.read()  # stream: bỏ qua frame rỗng thoáng qua
-        self._empty_streak = 0
-        self._frames_read += 1
-        return self._frames_read, frame
+
+        while True:
+            ok, frame = self._cap.read()
+            if not ok or frame is None:
+                self._empty_streak += 1
+                if not self._is_stream or self._empty_streak > self.empty_frame_tolerance:
+                    return None  # hết file, hoặc stream mất tín hiệu quá lâu
+                continue  # stream: bỏ qua frame rỗng thoáng qua
+            self._empty_streak = 0
+            self._frames_read += 1
+            return self._frames_read, frame
 
     def __iter__(self):
         return self
@@ -113,7 +130,7 @@ class VideoReader:
 def read_and_report(source, show_every=100):
     """Chạy thử VI-01: đọc hết nguồn, in thông tin và tốc độ đọc thực tế."""
     with VideoReader(source) as reader:
-        print(f"Nguồn       : {reader.source}")
+        print(f"Nguồn       : {mask_source(reader.source)}")
         print(f"Kích thước  : {reader.size[0]}x{reader.size[1]}" if reader.size else "Kích thước  : N/A")
         print(f"FPS khai báo: {reader.fps:.2f} | Tổng frame (file): {reader.frame_count}")
         t0 = time.time()

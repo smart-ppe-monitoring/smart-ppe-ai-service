@@ -11,7 +11,10 @@ import argparse
 import asyncio
 from datetime import datetime, timezone
 import logging
+import os
+import re
 from pathlib import Path
+import signal
 import time
 from typing import Optional
 
@@ -28,7 +31,7 @@ from app.constants import (
     SEVERITY_HIGH,
     SEVERITY_MEDIUM,
 )
-from app.clients.backend_client import fetch_system_default_rules, SafetyRulesConfig
+from app.clients.backend_client import fetch_system_default_rules, fetch_effective_rules, SafetyRulesConfig
 from app.detection.detector import Detector, DetectorError
 from app.association.associator import associate
 from app.rules.safety import evaluate as evaluate_safety
@@ -99,14 +102,22 @@ def _build_violation_event(
             height=float(target_person.bbox[3] - target_person.bbox[1]),
         )
 
-    # Convert person detections to schema format
+    # Convert person and secondary PPE equipment detections to schema format
     schema_detections = []
     for d in all_detections:
-        if d.track_id is None:
-            continue
-        cls_label = LABEL_PERSON if d.class_name == "person" else (
-            LABEL_HARD_HAT if d.class_name == "helmet" else LABEL_SAFETY_VEST
-        )
+        cls_name = getattr(d, "class_name", "")
+        if cls_name == "person":
+            cls_label = LABEL_PERSON
+        elif cls_name in ("helmet", "hard_hat"):
+            cls_label = LABEL_HARD_HAT
+        elif cls_name in ("safety_vest", "vest"):
+            cls_label = LABEL_SAFETY_VEST
+        else:
+            cls_label = cls_name.upper()
+
+        raw_track_id = getattr(d, "track_id", None)
+        track_id_val = int(raw_track_id) if raw_track_id is not None else None
+
         schema_detections.append(
             SchemaDetection(
                 classLabel=cls_label,
@@ -117,7 +128,7 @@ def _build_violation_event(
                     width=float(d.bbox[2] - d.bbox[0]),
                     height=float(d.bbox[3] - d.bbox[1]),
                 ),
-                trackId=int(d.track_id),
+                trackId=track_id_val,
             )
         )
 
@@ -155,6 +166,33 @@ def _build_violation_event(
     )
 
 
+_shutdown_requested = False
+
+
+def _handle_signal(sig, frame):
+    global _shutdown_requested
+    logger.info("Received signal %s, initiating graceful shutdown...", sig)
+    _shutdown_requested = True
+
+
+def register_signal_handlers():
+    """Register OS signal handlers for graceful shutdown (SIGINT, SIGTERM)."""
+    for sig_name in ("SIGINT", "SIGTERM"):
+        sig = getattr(signal, sig_name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, _handle_signal)
+            except (ValueError, AttributeError, RuntimeError):
+                pass
+
+
+def mask_credentials(url: Optional[str]) -> str:
+    """Mask user credentials in RTSP, HTTP, or other URLs to prevent credential leakage in logs."""
+    if not url or not isinstance(url, str):
+        return str(url) if url is not None else ""
+    return re.sub(r"://([^:@\s]+):(.+)@([^/@\s]+)", r"://\1:***@\3", url)
+
+
 def run_pipeline(
     source: Optional[str] = None,
     camera_id: str = "CAM-01",
@@ -168,11 +206,11 @@ def run_pipeline(
     cooldown_duration = rules.cooldown_s if rules else config.COOLDOWN_DURATION_S
     conf_threshold = rules.confidence if rules else config.CONFIDENCE_THRESHOLD
 
-    logger.info("Initializing VideoReader for source: %s", actual_source)
+    logger.info("Initializing VideoReader for source: %s", mask_credentials(actual_source))
     try:
         reader = VideoReader(actual_source)
     except VideoSourceError as err:
-        logger.error("Failed to open video source: %s", err)
+        logger.error("Failed to open video source: %s", mask_credentials(str(err)))
         return 1
 
     try:
@@ -201,22 +239,38 @@ def run_pipeline(
 
     last_flush_t = time.time()
 
-    with reader:
-        for num, frame in reader:
+    register_signal_handlers()
+    try:
+        with reader:
+            for num, frame in reader:
+                if _shutdown_requested:
+                    logger.info("Termination signal received. Exiting frame loop cleanly.")
+                    break
             n_frames += 1
             t0 = time.time()
             detections = detector.detect(frame)
             t_detect += time.time() - t0
 
+            # Determine active required PPE rules based on dynamic rules configuration
+            enable_helmet = getattr(rules, "enable_no_helmet", True) if rules else True
+            enable_vest = getattr(rules, "enable_no_vest", True) if rules else True
+
             associations = associate(detections)
             frame_h, frame_w = frame.shape[:2]
-            person_states = evaluate_safety(detections, associations, frame_w, frame_h)
+            person_states = evaluate_safety(
+                detections,
+                associations,
+                frame_w,
+                frame_h,
+                enable_no_helmet=enable_helmet,
+                enable_no_vest=enable_vest,
+            )
 
             t_frame = (num - 1) / (reader.fps if reader.fps > 0 else 25.0)
             confirmed = confirmation.update(t_frame, person_states)
 
             # Draw visual bboxes on output frame
-            draw_detections(frame, detections)
+            draw_detections(frame, detections, person_states=person_states)
 
             # Filter duplicates and produce final violations
             for ev in dedup.filter(confirmed, detections, t_frame):
@@ -227,7 +281,7 @@ def run_pipeline(
 
                 # 1. Save evidence snapshot locally
                 evidence_res = save_evidence(frame, detections, ev, config.EVIDENCE_DIR)
-                snapshot_url = evidence_res.path
+                snapshot_url = None
 
                 # 2. Upload to MinIO if client is ready, otherwise use local path
                 if evidence_res.status == "saved" and evidence_res.path:
@@ -242,8 +296,19 @@ def run_pipeline(
                             track_id=ev.person_track_id,
                         )
                         logger.info("Uploaded snapshot to MinIO: %s", snapshot_url)
+                        # SEC-18: Cleanup local evidence file once successfully uploaded to MinIO
+                        try:
+                            Path(evidence_res.path).unlink(missing_ok=True)
+                        except Exception:
+                            pass
                     except Exception as m_err:
-                        logger.debug("MinIO direct upload skipped (%s), using local reference: %s", m_err, snapshot_url)
+                        logger.debug("MinIO direct upload skipped (%s), using local reference: %s", m_err, evidence_res.path)
+
+                # SEC-25: Construct valid HTTP edge gateway URL if MinIO upload failed or was skipped
+                if not snapshot_url or not (str(snapshot_url).startswith("http://") or str(snapshot_url).startswith("https://")):
+                    evidence_file = Path(evidence_res.path).name if evidence_res.path else f"{ev.event_id}.jpg"
+                    edge_base = os.getenv("EDGE_GATEWAY_URL", f"{config.BACKEND_BASE_URL}/evidences").rstrip("/")
+                    snapshot_url = f"{edge_base}/{config.SITE_CODE}/{ev.camera_id}/{evidence_file}"
 
                 # 3. Build contract-compliant event
                 model_name = Path(config.YOLO_MODEL_PATH).name
@@ -251,7 +316,7 @@ def run_pipeline(
                     ev=ev,
                     frame_w=frame_w,
                     frame_h=frame_h,
-                    snapshot_url=snapshot_url or f"file:///{evidence_res.path}",
+                    snapshot_url=snapshot_url,
                     all_detections=detections,
                     model_name=model_name,
                 )
@@ -288,9 +353,15 @@ def run_pipeline(
                     num, (t_detect / n_frames * 1000.0) if n_frames > 0 else 0.0,
                 )
 
-    if writer:
-        writer.release()
-        logger.info("Saved annotated video to %s (%d frames)", out_path, n_frames)
+    finally:
+        if writer:
+            writer.release()
+            logger.info("Saved annotated video to %s (%d frames)", out_path, n_frames)
+        flush_producer(timeout=2.0)
+        try:
+            flush_offline_buffer(sync=True)
+        except Exception:
+            pass
 
     # Ensure all buffered Kafka events and offline records are flushed
     flush_producer()
@@ -302,17 +373,18 @@ def run_pipeline(
 async def async_main():
     parser = argparse.ArgumentParser(description="smart-ppe-ai-service — Video Intelligence Pipeline")
     parser.add_argument("--source", default=None, help="Video source (file path, RTSP URL, or webcam index)")
-    parser.add_argument("--camera-id", default="CAM-01", help="Camera identifier code")
+    parser.add_argument("--camera-id", default=os.getenv("CAMERA_ID", "CAM-01"), help="Camera identifier code")
+    parser.add_argument("--site-id", default=os.getenv("SITE_ID", config.SITE_CODE), help="Site identifier code or UUID")
     parser.add_argument("--out-dir", default="outputs", help="Directory for annotated output videos")
     parser.add_argument("--show-every", type=int, default=50, help="Log progress every N frames")
     args = parser.parse_args()
 
-    # Step 1: Dynamic safety rules retrieval from Backend
-    logger.info("Fetching dynamic safety rules from Backend...")
-    rules = await fetch_system_default_rules()
+    # Step 1: Dynamic safety rules retrieval from Backend (Effective rules for camera)
+    logger.info("Fetching dynamic safety rules from Backend for camera=%s, site=%s...", args.camera_id, args.site_id)
+    rules = await fetch_effective_rules(camera_id=args.camera_id, site_id=args.site_id)
     logger.info(
-        "Effective rules: confidence=%.2f, confirmation=%ds, cooldown=%ds",
-        rules.confidence, rules.confirmation_s, rules.cooldown_s,
+        "Effective rules: confidence=%.2f, confirmation=%.1fs, cooldown=%ds, helmet=%s, vest=%s",
+        rules.confidence, rules.confirmation_s, rules.cooldown_s, rules.enable_no_helmet, rules.enable_no_vest,
     )
 
     # Step 2: Run pipeline
@@ -326,6 +398,7 @@ async def async_main():
 
 
 def main():
+    register_signal_handlers()
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:

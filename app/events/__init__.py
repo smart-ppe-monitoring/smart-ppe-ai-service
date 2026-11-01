@@ -23,6 +23,7 @@ from app.events.offline_buffer import (
     load_batch,
     delete_events,
     pending_count,
+    increment_retries,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ def flush_offline_buffer(sync: bool = True) -> int:
     """
     Kiểm tra và đẩy toàn bộ các sự kiện đang tồn đọng trong SQLite offline buffer lên Backend.
     Trả về số lượng sự kiện đã flush thành công.
+    Tự động tăng retry counter cho các sự kiện lỗi để không làm nghẽn hàng đợi vĩnh viễn (poison-pill).
     """
     total_flushed = 0
     while pending_count() > 0:
@@ -80,7 +82,8 @@ def flush_offline_buffer(sync: bool = True) -> int:
             total_flushed += len(events)
             logger.info("Successfully flushed batch of %d offline events", len(events))
         except Exception as err:
-            logger.warning("Offline buffer flush halted due to error: %s", err)
+            logger.warning("Offline buffer flush halted due to error (%s). Incrementing retries for batch %s", err, ids)
+            increment_retries(ids)
             break
     return total_flushed
 
@@ -99,4 +102,5 @@ __all__ = [
     "load_batch",
     "delete_events",
     "pending_count",
+    "increment_retries",
 ]

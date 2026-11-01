@@ -1,3 +1,4 @@
+import asyncio
 """Test UI — FastAPI server phục vụ giao diện test 2 khung.
 
 Giao diện này TÁCH BIỆT với core pipeline: chỉ dùng lại các API công khai
@@ -8,10 +9,13 @@ Chạy (từ thư mục gốc video-intelligence):
     → mở http://127.0.0.1:8000
 """
 import json
+import logging
+import os
 import re
 import shutil
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 import uuid
 from pathlib import Path
@@ -33,6 +37,7 @@ from app.video.visualizer import draw_detections
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
+MODELS_DIR = (BASE_DIR.parent / "models").resolve()
 RESULT_DIR = BASE_DIR / "results"
 UPLOAD_DIR.mkdir(exist_ok=True)
 RESULT_DIR.mkdir(exist_ok=True)
@@ -40,13 +45,31 @@ RESULT_DIR.mkdir(exist_ok=True)
 VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
 
 app = FastAPI(title="Video Intelligence — Test UI")
+logger = logging.getLogger("test_ui_server")
 
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 
+# Bounded thread pool for video processing (max 2 concurrent jobs to prevent DoS)
+MAX_CONCURRENT_JOBS = 2
+JOB_EXECUTOR = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_JOBS, thread_name_prefix="video-worker")
 
-def _job_paths(job_id):
-    job_dir = RESULT_DIR / job_id
+JOB_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _validate_job_id(job_id: str) -> str:
+    """Validate job_id format and ensure it cannot traverse outside RESULT_DIR."""
+    if not job_id or not JOB_ID_RE.match(job_id):
+        raise HTTPException(400, "Mã job không hợp lệ")
+    resolved_dir = (RESULT_DIR / job_id).resolve()
+    if not resolved_dir.is_relative_to(RESULT_DIR):
+        raise HTTPException(400, "Đường dẫn job không hợp lệ")
+    return job_id
+
+
+def _job_paths(job_id: str):
+    _validate_job_id(job_id)
+    job_dir = (RESULT_DIR / job_id).resolve()
     return {
         "dir": job_dir,
         "video": job_dir / "annotated.mp4",
@@ -79,12 +102,42 @@ def _convert_to_h264(video_path: Path):
         "-movflags", "+faststart",
         str(tmp_path),
     ]
-    res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if res.returncode == 0 and tmp_path.exists():
-        tmp_path.replace(video_path)
+    try:
+        res = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+        if res.returncode == 0 and tmp_path.exists():
+            # SEC-23: Handle Windows file lock collision during atomic replace
+            for attempt in range(5):
+                try:
+                    if os.name == "nt" and video_path.exists():
+                        try:
+                            video_path.unlink(missing_ok=True)
+                        except PermissionError:
+                            pass
+                    tmp_path.replace(video_path)
+                    break
+                except PermissionError:
+                    if attempt < 4:
+                        time.sleep(0.5)
+                    else:
+                        logger.warning("Could not replace %s with %s due to Windows file lock", video_path, tmp_path)
+    except subprocess.TimeoutExpired:
+        logger.error("FFmpeg transcoding timed out after 120s for %s", video_path)
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error("FFmpeg transcoding failed for %s: %s", video_path, e)
 
 
-def _get_job(job_id):
+def _get_job(job_id: str):
+    _validate_job_id(job_id)
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if job is None:
@@ -106,11 +159,11 @@ def process_video(job_id, video_path, model_path=None):
     job = _get_job(job_id)
     paths = _job_paths(job_id)
     if model_path:
-        p = Path(model_path)
-        if not p.is_absolute() and not p.exists():
-            cand = BASE_DIR.parent / p
-            if cand.exists():
-                model_path = str(cand)
+        cand = (MODELS_DIR / Path(model_path).name).resolve()
+        if cand.exists() and cand.is_relative_to(MODELS_DIR) and cand.suffix.lower() in (".pt", ".onnx"):
+            model_path = str(cand)
+        else:
+            model_path = None
     try:
         with VideoReader(str(video_path)) as reader:
             detector = Detector(model_path=model_path).load()
@@ -251,14 +304,62 @@ def process_video(job_id, video_path, model_path=None):
             job.update(status="error", error=f"{type(e).__name__}: {e}")
 
 
+MAX_UPLOAD_SIZE_BYTES = 500 * 1024 * 1024  # 500 MB limit to prevent Memory Exhaustion DoS
+CHUNK_SIZE_BYTES = 1024 * 1024  # 1 MB chunks streaming
+
+
+def _is_valid_video_magic(header: bytes) -> bool:
+    """Validate initial header bytes against known video container signatures (MP4, MOV, AVI, MKV)."""
+    if len(header) < 12:
+        return False
+    # MP4 / M4V / MOV (ISOBMFF / QuickTime boxes: ftyp, moov, mdat, wide, skip, free)
+    if header[4:8] in (b"ftyp", b"moov", b"mdat", b"wide", b"skip", b"free"):
+        return True
+    # QuickTime box lengths with qt brand at offset 4
+    if header[:4] in (b"\x00\x00\x00\x14", b"\x00\x00\x00\x20"):
+        return True
+    # AVI (RIFF ... AVI  / AVIX)
+    if header[:4] == b"RIFF" and header[8:12] in (b"AVI ", b"AVIX"):
+        return True
+    # Matroska MKV / WebM (EBML header \x1a\x45\xdf\xa3)
+    if header[:4] == b"\x1a\x45\xdf\xa3":
+        return True
+    return False
+
+
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
     suffix = Path(file.filename or "video.mp4").suffix.lower()
     if suffix not in VIDEO_EXT:
         raise HTTPException(400, f"File không phải video. Hỗ trợ: {', '.join(sorted(VIDEO_EXT))}")
+
+    # SEC-24: Validate file magic header before saving to disk
+    header = await file.read(64)
+    await file.seek(0)
+    if not _is_valid_video_magic(header):
+        raise HTTPException(400, "Định dạng nội dung file không hợp lệ (không khớp signature video)")
+
     job_id = uuid.uuid4().hex[:12]
-    dest = UPLOAD_DIR / f"{job_id}{suffix}"
-    dest.write_bytes(await file.read())
+    dest = (UPLOAD_DIR / f"{job_id}{suffix}").resolve()
+    if not dest.is_relative_to(UPLOAD_DIR):
+        raise HTTPException(400, "Đường dẫn file không hợp lệ")
+
+    total_size = 0
+    try:
+        with open(dest, "wb") as f_out:
+            while chunk := await file.read(CHUNK_SIZE_BYTES):
+                total_size += len(chunk)
+                if total_size > MAX_UPLOAD_SIZE_BYTES:
+                    raise HTTPException(
+                        413,
+                        f"Dung lượng file vượt quá giới hạn tối đa cho phép ({MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB)."
+                    )
+                f_out.write(chunk)
+    except Exception:
+        if dest.exists():
+            dest.unlink(missing_ok=True)
+        raise
+
     _job_paths(job_id)["dir"].mkdir(parents=True, exist_ok=True)
     with JOBS_LOCK:
         JOBS[job_id] = {"status": "uploaded", "progress": 0.0, "source": file.filename}
@@ -267,6 +368,13 @@ async def upload(file: UploadFile = File(...)):
 
 @app.post("/api/jobs/{job_id}/start")
 def start(job_id: str, model: str = None):
+    if not re.match(r"^[a-zA-Z0-9_-]+$", job_id):
+        raise HTTPException(400, "Mã job không hợp lệ")
+    if model:
+        model_cand = (MODELS_DIR / Path(model).name).resolve()
+        if not model_cand.exists() or not model_cand.is_relative_to(MODELS_DIR) or model_cand.suffix.lower() not in (".pt", ".onnx"):
+            raise HTTPException(400, f"Mô hình không hợp lệ hoặc không tồn tại trong thư mục models: {model}")
+        model = str(model_cand)
     job = _get_job(job_id)
     with JOBS_LOCK:
         if job.get("status") == "processing":
@@ -278,7 +386,7 @@ def start(job_id: str, model: str = None):
             job["status"] = "error"
             job["error"] = "Không tìm thấy file upload"
         raise HTTPException(404, "Không tìm thấy file upload")
-    threading.Thread(target=process_video, args=(job_id, src, model), daemon=True).start()
+    JOB_EXECUTOR.submit(process_video, job_id, src, model)
     return {"status": "processing"}
 
 
@@ -324,23 +432,28 @@ def get_meta(job_id: str):
     return JSONResponse(json.loads(p.read_text(encoding="utf-8")))
 
 
-@app.get("/api/jobs")
-def list_jobs():
+def _scan_jobs_from_disk() -> list[dict]:
     jobs = []
-    for d in RESULT_DIR.iterdir():
-        if d.is_dir():
-            meta_p = d / "meta.json"
-            if meta_p.exists():
-                try:
-                    jobs.append(json.loads(meta_p.read_text(encoding="utf-8")))
-                except Exception:
-                    pass
+    if RESULT_DIR.exists():
+        for d in RESULT_DIR.iterdir():
+            if d.is_dir():
+                meta_p = d / "meta.json"
+                if meta_p.exists():
+                    try:
+                        jobs.append(json.loads(meta_p.read_text(encoding="utf-8")))
+                    except Exception:
+                        pass
     jobs.sort(key=lambda x: x.get("processed_at", ""), reverse=True)
     return jobs
 
 
-@app.get("/api/models")
-def list_models():
+@app.get("/api/jobs")
+async def list_jobs():
+    """SEC-14: Offload blocking filesystem disk traversal and JSON parsing to worker thread."""
+    return await asyncio.to_thread(_scan_jobs_from_disk)
+
+
+def _scan_models_from_disk() -> list[dict]:
     models_dir = BASE_DIR.parent / "models"
     available = []
     if models_dir.exists():
@@ -354,6 +467,17 @@ def list_models():
                 })
     available.sort(key=lambda x: (not x["is_default"], x["name"]))
     return available
+
+
+@app.get("/api/models")
+async def list_models():
+    """SEC-14: Offload model weight file scanning to worker thread."""
+    return await asyncio.to_thread(_scan_models_from_disk)
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    JOB_EXECUTOR.shutdown(wait=False)
 
 
 app.mount("/", StaticFiles(directory=BASE_DIR / "static", html=True), name="static")

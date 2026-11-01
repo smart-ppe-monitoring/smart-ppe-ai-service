@@ -31,33 +31,13 @@ def get_client() -> Minio:
 
 
 def ensure_bucket_exists(client: Minio, bucket_name: str) -> None:
-    """Ensure the target bucket exists and has public read policy for evidence images."""
+    """Ensure the target bucket exists with secure private access by default."""
     try:
         if not client.bucket_exists(bucket_name):
             client.make_bucket(bucket_name)
             logger.info("Created MinIO bucket: %s", bucket_name)
-
-        import json
-        policy = {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Principal": {"AWS": ["*"]},
-                    "Action": ["s3:GetBucketLocation", "s3:ListBucket"],
-                    "Resource": [f"arn:aws:s3:::{bucket_name}"],
-                },
-                {
-                    "Effect": "Allow",
-                    "Principal": {"AWS": ["*"]},
-                    "Action": ["s3:GetObject"],
-                    "Resource": [f"arn:aws:s3:::{bucket_name}/*"],
-                },
-            ],
-        }
-        client.set_bucket_policy(bucket_name, json.dumps(policy))
     except Exception as err:
-        logger.debug("Bucket policy setup info: %s", err)
+        logger.debug("Bucket check/creation info: %s", err)
 
 
 def upload_snapshot(image_bytes: bytes, site_code: str, camera_code: str, track_id: int) -> str:
@@ -76,7 +56,8 @@ def upload_snapshot(image_bytes: bytes, site_code: str, camera_code: str, track_
             length=len(image_bytes),
             content_type="image/jpeg",
         )
-        return f"http://{config.MINIO_ENDPOINT}/{config.MINIO_BUCKET_NAME}/{object_name}"
+        scheme = "https" if getattr(config, "MINIO_SECURE", False) else "http"
+        return f"{scheme}://{config.MINIO_ENDPOINT}/{config.MINIO_BUCKET_NAME}/{object_name}"
     except S3Error as exc:
         logger.error("MinIO upload failed for track %d: %s", track_id, exc)
         raise
@@ -98,7 +79,8 @@ def upload_clip(video_bytes: bytes, site_code: str, camera_code: str, track_id: 
             length=len(video_bytes),
             content_type="video/mp4",
         )
-        return f"http://{config.MINIO_ENDPOINT}/{config.MINIO_BUCKET_NAME}/{object_name}"
+        scheme = "https" if getattr(config, "MINIO_SECURE", False) else "http"
+        return f"{scheme}://{config.MINIO_ENDPOINT}/{config.MINIO_BUCKET_NAME}/{object_name}"
     except S3Error as exc:
         logger.error("MinIO clip upload failed for track %d: %s", track_id, exc)
         raise

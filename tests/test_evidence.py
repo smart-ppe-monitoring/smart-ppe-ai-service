@@ -58,7 +58,7 @@ def run_tests():
         # 4. Có detection người vi phạm -> ảnh có lớp đỏ mờ trên vùng bbox
         r3 = save_evidence(fake_frame(64, 48), [D("person", 10, 10, 50, 40, tid=1)],
                            ev("333333333333"), Path(tmp) / "ev")
-        img3 = cv2.imread(Path(r3.path))
+        img3 = cv2.imread(str(r3.path))
         cx, cy = 30, 25  # điểm giữa bbox (10,10)-(50,40)
         b, g, rr = img3[cy, cx]
         check("người vi phạm được tô đỏ (R > B tại giữa bbox)", rr > b + 40)
@@ -66,7 +66,7 @@ def run_tests():
         # 5. Track người không có trong detections -> vẫn lưu ảnh, không crash, không overlay
         r4 = save_evidence(fake_frame(64, 48), [D("helmet", 5, 5, 20, 15, tid=7)],
                            ev("444444444444"), Path(tmp) / "ev")
-        img4 = cv2.imread(Path(r4.path))
+        img4 = cv2.imread(str(r4.path))
         check("không tìm thấy người -> vẫn lưu, không overlay",
               r4.status == "saved" and img4 is not None and img4[25, 30][2] == 0)
 

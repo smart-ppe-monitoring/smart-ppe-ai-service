@@ -41,15 +41,25 @@ def save_event(event: ViolationEvent) -> None:
     logger.warning("Offline buffer: saved event for camera %s", event.cameraCode)
 
 
-def load_batch() -> tuple[list[int], list[ViolationEvent]]:
+def increment_retries(ids: list[int]) -> None:
+    """Increment the retry counter for failed events to prevent poison-pill head-of-line blocking."""
+    if not ids:
+        return
+    placeholders = ",".join("?" * len(ids))
+    with _get_conn() as conn:
+        conn.execute(f"UPDATE offline_events SET retried = retried + 1 WHERE id IN ({placeholders})", ids)
+    logger.warning("Offline buffer: incremented retries for %d events", len(ids))
+
+
+def load_batch(max_retries: int = 3) -> tuple[list[int], list[ViolationEvent]]:
     """
-    Load up to OFFLINE_BUFFER_BATCH_SIZE pending events.
+    Load up to OFFLINE_BUFFER_BATCH_SIZE pending events with retried < max_retries.
     Returns (ids, events) — caller must call delete_events(ids) after successful publish.
     """
     with _get_conn() as conn:
         rows = conn.execute(
-            "SELECT id, payload FROM offline_events ORDER BY id LIMIT ?",
-            (OFFLINE_BUFFER_BATCH_SIZE,),
+            "SELECT id, payload FROM offline_events WHERE retried < ? ORDER BY id LIMIT ?",
+            (max_retries, OFFLINE_BUFFER_BATCH_SIZE),
         ).fetchall()
     ids = [r[0] for r in rows]
     events = [ViolationEvent.model_validate_json(r[1]) for r in rows]
@@ -66,6 +76,6 @@ def delete_events(ids: list[int]) -> None:
     logger.info("Offline buffer: deleted %d flushed events", len(ids))
 
 
-def pending_count() -> int:
+def pending_count(max_retries: int = 3) -> int:
     with _get_conn() as conn:
-        return conn.execute("SELECT COUNT(*) FROM offline_events").fetchone()[0]
+        return conn.execute("SELECT COUNT(*) FROM offline_events WHERE retried < ?", (max_retries,)).fetchone()[0]

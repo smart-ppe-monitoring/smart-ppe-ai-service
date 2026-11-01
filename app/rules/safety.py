@@ -48,7 +48,7 @@ class PersonState:
     reason: str = ""  # lý do UNKNOWN (quá nhỏ / confidence thấp / bị cắt khung)
 
 
-def _judgeable(assoc, frame_w):
+def _judgeable(assoc, frame_w, active_classes=None):
     """Mỗi luật PPE có xét được không — người bị cắt ở mép khung thì không kết luận phần đó.
 
     - Mũ nằm ở ĐỈNH đầu: chạm mép trên là có thể đã che mất mũ -> không xét.
@@ -58,8 +58,9 @@ def _judgeable(assoc, frame_w):
     """
     x1, y1, x2, _ = assoc.person_bbox
     m = PERSON_EDGE_MARGIN_PX
+    classes = active_classes if active_classes is not None else REQUIRED_PPE
     out = {}
-    for cls in REQUIRED_PPE:
+    for cls in classes:
         if cls == HELMET:
             out[cls] = y1 > m
         elif cls == SAFETY_VEST:
@@ -70,8 +71,30 @@ def _judgeable(assoc, frame_w):
     return out
 
 
-def evaluate(detections, associations, frame_w, frame_h):
-    """Tính trạng thái VI-05 cho từng người (kết quả ghép VI-04) trong một frame."""
+def evaluate(
+    detections,
+    associations,
+    frame_w,
+    frame_h,
+    required_ppe=None,
+    enable_no_helmet: bool = True,
+    enable_no_vest: bool = True,
+):
+    """Tính trạng thái VI-05 cho từng người (kết quả ghép VI-04) trong một frame.
+
+    Hỗ trợ tham số linh hoạt:
+      - required_ppe: tuple/list các lớp bắt buộc (vd: ("helmet", "safety_vest"))
+      - hoặc enable_no_helmet (bool) & enable_no_vest (bool) bật/tắt riêng từng luật
+    """
+    if required_ppe is not None:
+        active_required = list(required_ppe)
+    else:
+        active_required = []
+        if enable_no_helmet:
+            active_required.append(HELMET)
+        if enable_no_vest:
+            active_required.append(SAFETY_VEST)
+
     persons = {d.track_id: d for d in detections
                if d.class_name == PERSON and d.track_id is not None}
     states = []
@@ -93,11 +116,11 @@ def evaluate(detections, associations, frame_w, frame_h):
                                       reason="VI-04 không ghép được PPE"))
             continue
 
-        judgeable = _judgeable(a, frame_w)
+        judgeable = _judgeable(a, frame_w, active_required)
         violations = []
         unjudgeable = []
-        for cls in REQUIRED_PPE:
-            if not judgeable[cls]:
+        for cls in active_required:
+            if not judgeable.get(cls, True):
                 unjudgeable.append(cls)
                 continue
             missing = (a.helmet_track_id is None) if cls == HELMET else (a.vest_track_id is None)

@@ -29,6 +29,21 @@ def get_producer() -> Producer:
 def _delivery_report(err, msg):
     if err:
         logger.error("Kafka delivery failed: %s", err)
+        # SEC-09: Fallback to local SQLite offline buffer on async Kafka delivery failure
+        try:
+            val = msg.value() if msg else None
+            if val:
+                raw_envelope = json.loads(val.decode("utf-8") if isinstance(val, bytes) else str(val))
+                payload_data = raw_envelope.get("payload", {})
+                from app.events.offline_buffer import save_event
+                event = ViolationEvent.model_validate(payload_data)
+                save_event(event)
+                logger.info(
+                    "Kafka async delivery failure recovered: saved event for camera %s to offline buffer",
+                    event.cameraCode
+                )
+        except Exception as fb_err:
+            logger.critical("Failed to save undelivered Kafka message to offline buffer: %s", fb_err)
     else:
         logger.debug("Message delivered to %s [%s]", msg.topic(), msg.partition())
 
