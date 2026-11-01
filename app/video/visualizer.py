@@ -5,10 +5,10 @@ import numpy as np
 
 from app.detection.adapter import HELMET, PERSON, SAFETY_VEST
 
-# Màu sắc BGR theo class: Person (xanh lá), Helmet (vàng), Safety Vest (cam)
+# Màu BGR (OpenCV), khớp bảng màu đã dùng khi train (Person xanh dương, Helmet xanh lá, Vest cam)
 COLORS = {
-    PERSON: (0, 220, 0),
-    HELMET: (0, 220, 255),
+    PERSON: (255, 100, 60),
+    HELMET: (80, 200, 0),
     SAFETY_VEST: (0, 170, 255),
 }
 
