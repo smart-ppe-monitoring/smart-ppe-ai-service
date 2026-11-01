@@ -105,6 +105,21 @@ def run_tests():
     r = evaluate([det], [PersonPPE(det.track_id, det.bbox, status=ASSOC_UNKNOWN)], 1000, 1000)
     check("assoc UNKNOWN -> UNKNOWN", r[0].status == UNKNOWN)
 
+    # 12. Dynamic rules: enable_no_helmet=False -> bỏ qua lỗi mũ
+    asso_no_helmet = [PersonPPE(P.track_id, P.bbox, helmet_track_id=None, vest_track_id=VT.track_id)]
+    r_no_helmet = evaluate([P, VT], asso_no_helmet, 1000, 1000, enable_no_helmet=False, enable_no_vest=True)
+    check("enable_no_helmet=False -> thiếu mũ vẫn COMPLIANT", r_no_helmet[0].status == COMPLIANT)
+
+    # 13. Dynamic rules: enable_no_vest=False -> bỏ qua lỗi áo
+    asso_no_vest = [PersonPPE(P.track_id, P.bbox, helmet_track_id=HM.track_id, vest_track_id=None)]
+    r_no_vest = evaluate([P, HM], asso_no_vest, 1000, 1000, enable_no_helmet=True, enable_no_vest=False)
+    check("enable_no_vest=False -> thiếu áo vẫn COMPLIANT", r_no_vest[0].status == COMPLIANT)
+
+    # 14. Dynamic rules: tắt cả mũ và áo -> thiếu cả 2 vẫn COMPLIANT
+    asso_no_ppe = [PersonPPE(P.track_id, P.bbox, helmet_track_id=None, vest_track_id=None)]
+    r_no_ppe = evaluate([P], asso_no_ppe, 1000, 1000, enable_no_helmet=False, enable_no_vest=False)
+    check("tắt cả mũ và áo -> COMPLIANT", r_no_ppe[0].status == COMPLIANT)
+
     return failed
 
 
