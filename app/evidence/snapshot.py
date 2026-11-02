@@ -33,8 +33,9 @@ class EvidenceResult:
     """Kết quả lưu snapshot của một event vi phạm."""
     event_id: str
     status: str          # "saved" | "error"
-    path: str            # đường dẫn local (rỗng nếu lỗi)
-    error: str           # message lỗi (rỗng nếu saved)
+    path: str            # đường dẫn local ảnh vi phạm (rỗng nếu lỗi)
+    reference_path: str = ""  # đường dẫn local ảnh đối chứng (rỗng nếu không có/lỗi)
+    error: str = ""      # message lỗi (rỗng nếu saved)
 
 
 def _draw_violation_overlay(img, bbox, label):
@@ -57,8 +58,17 @@ def _draw_violation_overlay(img, bbox, label):
     cv2.putText(img, label, (x1 + 4, ty), cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), 2)
 
 
+def _draw_reference_overlay(img, label):
+    """Vẽ thanh thông tin ảnh đối chứng màu xanh lá trên đầu ảnh."""
+    h, w = img.shape[:2]
+    banner_h = max(32, int(h * 0.06))
+    cv2.rectangle(img, (0, 0), (w, banner_h), (34, 139, 34), -1)  # Forest Green
+    scale = max(0.55, w / 1100.0)
+    cv2.putText(img, label, (12, int(banner_h * 0.7)), cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), 2)
+
+
 def save_evidence(frame, detections, event, out_dir) -> EvidenceResult:
-    """Lưu frame (đã vẽ box) thành JPEG `<out_dir>/<event.event_id>.jpg`.
+    """Lưu frame vi phạm `<out_dir>/<event.event_id>.jpg` và ảnh đối chứng `<event.event_id>_ref.jpg`.
 
     Tìm bbox người vi phạm trong detections để tô lớp đỏ mờ; không tìm thấy
     (track mất đúng frame phát event) vẫn lưu ảnh bình thường, chỉ bỏ overlay.
@@ -81,8 +91,26 @@ def save_evidence(frame, detections, event, out_dir) -> EvidenceResult:
             raise ValueError("không encode được JPEG")
         dest = out_path / f"{event_id}.jpg"
         dest.write_bytes(buf.tobytes())
+
+        # Lưu ảnh đối chứng nếu có trong event
+        ref_dest_str = ""
+        ref_frame = getattr(event, "reference_frame", None)
+        if ref_frame is not None:
+            try:
+                ref_snap = ref_frame.copy()
+                ref_type = getattr(event, "reference_type", "COMPLIANT")
+                ref_label = "ANH DOI CHUNG: TRANG THAI HOP LE (BEFORE)" if ref_type == "COMPLIANT" else "ANH DOI CHUNG: BAT DAU VI PHAM (T=0s)"
+                _draw_reference_overlay(ref_snap, ref_label)
+                ok_ref, buf_ref = cv2.imencode(".jpg", ref_snap)
+                if ok_ref:
+                    dest_ref = out_path / f"{event_id}_ref.jpg"
+                    dest_ref.write_bytes(buf_ref.tobytes())
+                    ref_dest_str = str(dest_ref)
+            except Exception:
+                pass  # Không để lỗi lưu ảnh đối chứng ảnh hưởng tới ảnh vi phạm
+
         return EvidenceResult(event_id=event_id, status="saved",
-                              path=str(dest), error="")
+                              path=str(dest), reference_path=ref_dest_str, error="")
     except Exception as e:
         return EvidenceResult(event_id=event_id, status="error",
-                              path="", error=f"{type(e).__name__}: {e}")
+                              path="", reference_path="", error=f"{type(e).__name__}: {e}")

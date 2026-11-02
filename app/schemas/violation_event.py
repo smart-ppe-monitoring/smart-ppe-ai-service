@@ -29,6 +29,7 @@ class FrameResolution(BaseModel):
 
 class Evidence(BaseModel):
     snapshotUrl: str          # Must be a valid HTTP URL accessible from MinIO
+    referenceSnapshotUrl: Optional[str] = None  # URL ảnh đối chứng chụp trước đó
     clipUrl: Optional[str] = None
     frameResolution: FrameResolution = Field(default_factory=FrameResolution)
 

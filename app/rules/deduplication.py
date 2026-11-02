@@ -37,6 +37,8 @@ class ViolationEvent:
     start_t: float
     confirmed_t: float
     duration_s: float
+    reference_frame: object = None  # Frame đối chứng trước đó
+    reference_type: str = "COMPLIANT"
 
 
 def _center(bbox):
@@ -155,5 +157,7 @@ class ViolationDeduplicator:
                 start_t=c.start_t,
                 confirmed_t=c.confirmed_t,
                 duration_s=c.duration_s,
+                reference_frame=getattr(c, "reference_frame", None),
+                reference_type=getattr(c, "reference_type", "COMPLIANT"),
             ))
         return out

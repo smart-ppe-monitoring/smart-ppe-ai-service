@@ -92,6 +92,16 @@ def run_tests():
                            ev_vest, Path(tmp) / "ev")
         check("no_safety_vest lưu OK", r7.status == "saved")
 
+        # 9. Có reference_frame -> lưu thêm file đối chứng <event_id>_ref.jpg
+        ev_ref = ev("888888888888")
+        ev_ref.reference_frame = fake_frame(64, 48)
+        ev_ref.reference_type = "COMPLIANT"
+        r8 = save_evidence(fake_frame(64, 48), [D("person", 10, 10, 50, 40, tid=1)],
+                           ev_ref, Path(tmp) / "ev")
+        ref_file = Path(r8.reference_path) if r8.reference_path else None
+        check("có reference_frame -> lưu <event_id>_ref.jpg",
+              r8.status == "saved" and ref_file is not None and ref_file.exists() and ref_file.name == "888888888888_ref.jpg")
+
     return failed
 
 

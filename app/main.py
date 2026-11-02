@@ -82,6 +82,7 @@ def _build_violation_event(
     snapshot_url: str,
     all_detections: list,
     model_name: str,
+    reference_snapshot_url: Optional[str] = None,
 ) -> ViolationEvent:
     """Build a Contract 2.1.0-PPE-STABLE compliant ViolationEvent."""
     v_type = _map_violation_type(ev.violation_type)
@@ -147,6 +148,7 @@ def _build_violation_event(
         timestamp=now_iso,
         evidence=Evidence(
             snapshotUrl=snapshot_url,
+            referenceSnapshotUrl=reference_snapshot_url,
             clipUrl=None,
             frameResolution=FrameResolution(width=frame_w, height=frame_h),
         ),
@@ -267,7 +269,7 @@ def run_pipeline(
             )
 
             t_frame = (num - 1) / (reader.fps if reader.fps > 0 else 25.0)
-            confirmed = confirmation.update(t_frame, person_states)
+            confirmed = confirmation.update(t_frame, person_states, frame=frame)
 
             # Draw visual bboxes on output frame
             draw_detections(frame, detections, person_states=person_states)
@@ -279,9 +281,10 @@ def run_pipeline(
                     ev.camera_id, ev.person_track_id, ev.violation_type, ev.duration_s,
                 )
 
-                # 1. Save evidence snapshot locally
+                # 1. Save evidence snapshots locally (violation + reference)
                 evidence_res = save_evidence(frame, detections, ev, config.EVIDENCE_DIR)
                 snapshot_url = None
+                reference_snapshot_url = None
 
                 # 2. Upload to MinIO if client is ready, otherwise use local path
                 if evidence_res.status == "saved" and evidence_res.path:
@@ -304,11 +307,37 @@ def run_pipeline(
                     except Exception as m_err:
                         logger.debug("MinIO direct upload skipped (%s), using local reference: %s", m_err, evidence_res.path)
 
+                # 2b. Upload reference snapshot to MinIO if available
+                if evidence_res.status == "saved" and evidence_res.reference_path:
+                    try:
+                        from app.storage.minio_client import upload_snapshot
+                        with open(evidence_res.reference_path, "rb") as f:
+                            ref_bytes = f.read()
+                        # SEC-27: Pass suffix='ref' to avoid S3 key collision and overwrite of violation snapshot
+                        reference_snapshot_url = upload_snapshot(
+                            image_bytes=ref_bytes,
+                            site_code=config.SITE_CODE,
+                            camera_code=ev.camera_id,
+                            track_id=ev.person_track_id,
+                            suffix="ref",
+                        )
+                        logger.info("Uploaded reference snapshot to MinIO: %s", reference_snapshot_url)
+                        try:
+                            Path(evidence_res.reference_path).unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                    except Exception as m_err:
+                        logger.debug("MinIO reference upload skipped (%s), using local reference", m_err)
+
                 # SEC-25: Construct valid HTTP edge gateway URL if MinIO upload failed or was skipped
+                edge_base = os.getenv("EDGE_GATEWAY_URL", f"{config.BACKEND_BASE_URL}/evidences").rstrip("/")
                 if not snapshot_url or not (str(snapshot_url).startswith("http://") or str(snapshot_url).startswith("https://")):
                     evidence_file = Path(evidence_res.path).name if evidence_res.path else f"{ev.event_id}.jpg"
-                    edge_base = os.getenv("EDGE_GATEWAY_URL", f"{config.BACKEND_BASE_URL}/evidences").rstrip("/")
                     snapshot_url = f"{edge_base}/{config.SITE_CODE}/{ev.camera_id}/{evidence_file}"
+
+                if evidence_res.reference_path and (not reference_snapshot_url or not (str(reference_snapshot_url).startswith("http://") or str(reference_snapshot_url).startswith("https://"))):
+                    ref_file = Path(evidence_res.reference_path).name
+                    reference_snapshot_url = f"{edge_base}/{config.SITE_CODE}/{ev.camera_id}/{ref_file}"
 
                 # 3. Build contract-compliant event
                 model_name = Path(config.YOLO_MODEL_PATH).name
@@ -317,6 +346,7 @@ def run_pipeline(
                     frame_w=frame_w,
                     frame_h=frame_h,
                     snapshot_url=snapshot_url,
+                    reference_snapshot_url=reference_snapshot_url,
                     all_detections=detections,
                     model_name=model_name,
                 )

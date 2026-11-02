@@ -40,13 +40,15 @@ def ensure_bucket_exists(client: Minio, bucket_name: str) -> None:
         logger.debug("Bucket check/creation info: %s", err)
 
 
-def upload_snapshot(image_bytes: bytes, site_code: str, camera_code: str, track_id: int) -> str:
+def upload_snapshot(image_bytes: bytes, site_code: str, camera_code: str, track_id: int, suffix: str = "") -> str:
     """
     Upload a JPEG snapshot to MinIO.
     Returns the public HTTP URL to include in snapshotUrl field.
+    SEC-27: Support optional suffix (e.g. 'ref') to prevent S3 key collisions and overwrites.
     """
     ts = int(time.time())
-    object_name = f"{MINIO_EVIDENCE_PREFIX}/{site_code}/{camera_code}/{ts}_track{track_id}.jpg"
+    suffix_part = f"_{suffix}" if suffix else ""
+    object_name = f"{MINIO_EVIDENCE_PREFIX}/{site_code}/{camera_code}/{ts}_track{track_id}{suffix_part}.jpg"
     try:
         client = get_client()
         client.put_object(

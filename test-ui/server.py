@@ -188,7 +188,7 @@ def process_video(job_id, video_path, model_path=None):
                     associations = associate(detections)
                     person_states = evaluate_safety(detections, associations, w, h)
                     t_frame = round((num - 1) / reader.fps, 3)
-                    confirmations = confirmation.update(t_frame, person_states)
+                    confirmations = confirmation.update(t_frame, person_states, frame=frame)
                     violation_events = dedup.filter(confirmations, detections, t_frame)
                     draw_detections(frame, detections)
                     evidence_results = [save_evidence(frame, detections, ev, paths["dir"] / "evidences")
@@ -268,6 +268,8 @@ def process_video(job_id, video_path, model_path=None):
                                 "event_id": r.event_id,
                                 "status": r.status,
                                 "path": r.path,
+                                "reference_path": getattr(r, "reference_path", ""),
+                                "has_reference": bool(getattr(r, "reference_path", "")),
                                 "error": r.error,
                             }
                             for r in evidence_results
@@ -411,7 +413,7 @@ def get_video(job_id: str):
     return FileResponse(p, media_type="video/mp4")
 
 
-EVIDENCE_FILE_RE = re.compile(r"^[0-9a-f]{12}\.jpg$")  # event_id là uuid4 hex 12 ký tự
+EVIDENCE_FILE_RE = re.compile(r"^[0-9a-f]{12}(?:_ref)?\.jpg$")  # event_id hoặc event_id_ref
 
 
 @app.get("/api/jobs/{job_id}/evidence/{filename}")

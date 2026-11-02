@@ -195,3 +195,49 @@ def test_sec_25_offline_snapshot_url_generates_valid_http_scheme():
     # Verify serialization
     payload = event.model_dump(by_alias=True)
     assert payload["evidence"]["snapshotUrl"] == fallback_url
+
+
+# ==============================================================================
+# SEC-27: MinIO S3 Object Key Suffix and Snapshot Overwrite Collision Prevention
+# ==============================================================================
+
+def test_sec_27_minio_snapshot_suffix_and_no_collision():
+    """Verify upload_snapshot supports suffix to distinguish reference snapshots from violation snapshots."""
+    from app.storage.minio_client import upload_snapshot
+
+    mock_client = MagicMock()
+    with patch("app.storage.minio_client.get_client", return_value=mock_client):
+        # 1. Upload main violation snapshot (no suffix)
+        url_main = upload_snapshot(
+            image_bytes=b"violation_image_data",
+            site_code="SITE-TEST",
+            camera_code="CAM-01",
+            track_id=42,
+        )
+
+        # 2. Upload reference snapshot with suffix="ref"
+        url_ref = upload_snapshot(
+            image_bytes=b"reference_image_data",
+            site_code="SITE-TEST",
+            camera_code="CAM-01",
+            track_id=42,
+            suffix="ref",
+        )
+
+        # Verify put_object was called twice with different object names
+        assert mock_client.put_object.call_count == 2
+        call_main = mock_client.put_object.call_args_list[0]
+        call_ref = mock_client.put_object.call_args_list[1]
+
+        object_main = call_main.kwargs["object_name"]
+        object_ref = call_ref.kwargs["object_name"]
+
+        # Main snapshot ends with _track42.jpg
+        assert object_main.endswith("_track42.jpg")
+        # Reference snapshot ends with _track42_ref.jpg
+        assert object_ref.endswith("_track42_ref.jpg")
+        # Ensure object names are distinct, eliminating overwrite race condition
+        assert object_main != object_ref
+        assert url_main != url_ref
+        assert "_ref.jpg" in url_ref
+        assert "_ref.jpg" not in url_main

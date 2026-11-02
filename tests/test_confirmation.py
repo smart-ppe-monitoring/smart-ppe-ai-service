@@ -141,6 +141,23 @@ def run_tests():
         evs += feed(c, t, cand(1, VIOLATION_NO_HELMET))
     check("duration cấu hình được (1s)", len(evs) == 1 and evs[0].confirmed_t == 1.0)
 
+    # 11. SEC-26: Dọn dẹp bộ đệm compliant_frames khi track biến mất và giới hạn dung lượng cache
+    import numpy as np
+    c = ViolationConfirmation(2.0, max_compliant_frames=3)
+    dummy_frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    # Track 10 tuân thủ ở t=0
+    c.update(0.0, [PersonState(10, COMPLIANT)], frame=dummy_frame)
+    check("SEC-26: lưu frame tuân thủ của track 10", 10 in c._compliant_frames)
+
+    # Ở t=1, track 10 rời khỏi camera
+    c.update(1.0, [], frame=dummy_frame)
+    check("SEC-26: tự động thu hồi frame khi track 10 rời khỏi camera", 10 not in c._compliant_frames)
+
+    # Bounded cache limit (max 3 frames)
+    for tid in range(1, 6):
+        c.update(2.0, [PersonState(i, COMPLIANT) for i in range(1, tid + 1)], frame=dummy_frame)
+    check("SEC-26: số lượng compliant_frames không vượt quá max_compliant_frames", len(c._compliant_frames) <= 3)
+
     return failed
 
 

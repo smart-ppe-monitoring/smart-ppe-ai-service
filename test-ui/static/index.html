@@ -73,6 +73,19 @@
 
   .toolbar { display: flex; gap: 8px; align-items: center; padding: 8px 10px; font-size: 12px; color: var(--dim); }
   .toolbar input[type=number] { width: 70px; background: #0d1117; color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px; }
+
+  /* Dual-column Before/After evidence display */
+  #dualEvidenceSection { border-top: 1px solid var(--border); padding: 12px; background: #161b22; overflow-y: auto; max-height: 40vh; }
+  .dual-evidence-title { font-size: 13px; font-weight: 600; color: var(--accent); margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
+  .dual-card { border: 1px solid var(--border); border-radius: 6px; background: #0d1117; padding: 10px; margin-bottom: 12px; }
+  .dual-card-header { font-size: 12px; color: var(--text); margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+  .dual-card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .dual-col { display: flex; flex-direction: column; gap: 4px; }
+  .dual-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 3px; text-transform: uppercase; width: fit-content; }
+  .dual-badge.ref { background: rgba(63, 185, 80, 0.15); color: var(--green); border: 1px solid var(--green); }
+  .dual-badge.viol { background: rgba(248, 81, 73, 0.15); color: var(--red); border: 1px solid var(--red); }
+  .dual-col img { width: 100%; border: 1px solid var(--border); border-radius: 4px; aspect-ratio: 16/9; object-fit: contain; background: #000; cursor: pointer; }
+  .dual-col-caption { font-size: 11px; color: var(--dim); }
 </style>
 </head>
 <body>
@@ -93,12 +106,21 @@
 </header>
 
 <div class="main">
-  <div class="pane" id="videoPane">
+  <div class="pane" id="videoPane" style="overflow-y: auto;">
     <div id="videoInfo">Chưa có video — upload một video để xem kết quả detect + tracking.</div>
     <video id="video" controls></video>
     <div class="toolbar">
       <label>Nhảy tới frame: <input type="number" id="frameJump" min="1" value="1"></label>
       <span id="videoStats"></span>
+    </div>
+
+    <!-- KHU VỰC ĐỐI CHỨNG 2 CỘT ẢNH DƯỚI VIDEO STREAM -->
+    <div id="dualEvidenceSection" style="display: none;">
+      <div class="dual-evidence-title">
+        <span>📸 ĐỐI CHỨNG BẰNG CHỨNG VI PHẠM (BEFORE vs AFTER)</span>
+        <span id="dualEvidenceCount" style="font-size: 11px; color: var(--dim)"></span>
+      </div>
+      <div id="dualEvidenceContainer"></div>
     </div>
   </div>
 
@@ -263,7 +285,15 @@ function renderViolations() {
 // ---------- bằng chứng vi phạm (VI-08) ----------
 function renderEvidence() {
   const btn = $("evidenceBtn");
-  if (!state.evidence.length) { btn.hidden = true; $("evidenceBox").hidden = true; return; }
+  const dualSec = $("dualEvidenceSection");
+  const dualContainer = $("dualEvidenceContainer");
+
+  if (!state.evidence.length) {
+    btn.hidden = true;
+    $("evidenceBox").hidden = true;
+    if (dualSec) dualSec.style.display = "none";
+    return;
+  }
   btn.hidden = false;
   btn.textContent = `Xem bằng chứng / frame lỗi (${state.evidence.length})`;
   const items = state.evidence.map(ev => {
@@ -277,10 +307,13 @@ function renderEvidence() {
         `<span style="color:var(--dim)">t=${confT}s · frame ${safeFrame} · ${escapeHtml(v.camera_id)} · id=${escapeHtml(v.event_id)}</span>`
       : `<span style="color:var(--dim)">id=${escapeHtml(ev.event_id)} · frame ${safeFrame}</span>`;
     if (ev.status === "saved") {
+      const refLink = ev.has_reference || ev.reference_path
+        ? ` · <a href="/api/jobs/${safeJobId}/evidence/${safeEvId}_ref.jpg" target="_blank" style="color:var(--green)">[Xem ảnh đối chứng]</a>`
+        : "";
       return `<div class="evidence-item">` +
         `<a href="/api/jobs/${safeJobId}/evidence/${safeEvId}.jpg" target="_blank">` +
         `<img loading="lazy" src="/api/jobs/${safeJobId}/evidence/${safeEvId}.jpg" alt="bằng chứng ${escapeHtml(ev.event_id)}"></a>` +
-        `<div class="evidence-info"><span class="good">✔ Đã lưu</span> — ${escapeHtml(ev.path)}<br>${info}</div></div>`;
+        `<div class="evidence-info"><span class="good">✔ Đã lưu</span> — ${escapeHtml(ev.path)}${refLink}<br>${info}</div></div>`;
     }
     const seekFrame = parseInt(ev.frame) || 1;
     return `<div class="evidence-item err">` +
@@ -289,6 +322,52 @@ function renderEvidence() {
       `<a href="#" onclick="seekToFrame(${seekFrame});return false">▶ nhảy tới frame ${safeFrame} trong video</a></div></div>`;
   }).join("");
   $("evidenceBox").innerHTML = items;
+
+  // Render song song 2 cột ảnh (Cột 1: Đối chứng, Cột 2: Vi phạm) ngay dưới video stream
+  const savedEvs = state.evidence.filter(x => x.status === "saved");
+  if (savedEvs.length && dualSec && dualContainer) {
+    dualSec.style.display = "block";
+    const countBadge = $("dualEvidenceCount");
+    if (countBadge) countBadge.textContent = `(${savedEvs.length} sự cố)`;
+    dualContainer.innerHTML = savedEvs.map(ev => {
+      const v = state.violations.find(x => x.event_id === ev.event_id);
+      const safeJobId = encodeURIComponent(state.jobId || "");
+      const safeEvId = encodeURIComponent(ev.event_id || "");
+      const vt = v ? (VT_LABEL[v.violation_type] || v.violation_type) : "Vi phạm PPE";
+      const pid = v ? v.person : "—";
+      const dur = v && typeof v.duration_s === "number" ? v.duration_s.toFixed(1) : "2.0";
+      const seekFrame = parseInt(ev.frame) || 1;
+      const refSrc = `/api/jobs/${safeJobId}/evidence/${safeEvId}_ref.jpg`;
+      const violSrc = `/api/jobs/${safeJobId}/evidence/${safeEvId}.jpg`;
+
+      return `
+        <div class="dual-card">
+          <div class="dual-card-header">
+            <span><b>Người #${escapeHtml(pid)}: ${escapeHtml(vt)}</b> (kéo dài ${escapeHtml(dur)}s liên tục)</span>
+            <a href="#" onclick="seekToFrame(${seekFrame});return false" style="color:var(--accent);text-decoration:none;">▶ Nhảy tới frame ${escapeHtml(ev.frame)}</a>
+          </div>
+          <div class="dual-card-grid">
+            <div class="dual-col">
+              <span class="dual-badge ref">📷 CỘT 1: ẢNH ĐỐI CHỨNG (TRƯỚC VI PHẠM)</span>
+              <a href="${refSrc}" target="_blank" title="Bấm để mở ảnh gốc">
+                <img loading="lazy" src="${refSrc}" alt="Ảnh đối chứng #${escapeHtml(pid)}" onerror="this.onerror=null;this.src='${violSrc}';">
+              </a>
+              <span class="dual-col-caption">Trạng thái tuân thủ gần nhất hoặc frame T=0s</span>
+            </div>
+            <div class="dual-col">
+              <span class="dual-badge viol">🚨 CỘT 2: ẢNH VI PHẠM (XÁC NHẬN 2S)</span>
+              <a href="${violSrc}" target="_blank" title="Bấm để mở ảnh gốc">
+                <img loading="lazy" src="${violSrc}" alt="Ảnh vi phạm #${escapeHtml(pid)}">
+              </a>
+              <span class="dual-col-caption">Phát hiện vi phạm liên tục $\ge 2s$ (có lớp đỏ phủ nhận diện)</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join("");
+  } else if (dualSec) {
+    dualSec.style.display = "none";
+  }
 }
 
 $("evidenceBtn").onclick = () => { $("evidenceBox").hidden = !$("evidenceBox").hidden; };
