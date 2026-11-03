@@ -80,6 +80,10 @@ class VideoReader:
     # ---------- thông tin nguồn ----------
 
     @property
+    def is_stream(self) -> bool:
+        return self._is_stream
+
+    @property
     def fps(self):
         fps = self._cap.get(cv2.CAP_PROP_FPS) if self._opened else 0.0
         return fps if fps and fps > 0 else config.FALLBACK_FPS

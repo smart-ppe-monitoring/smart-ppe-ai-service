@@ -30,6 +30,7 @@ class ConfirmedViolation:
     confirmed_t: float   # thời điểm xác nhận (giây)
     duration_s: float    # tổng thời gian CANDIDATE trong chuỗi
     reference_frame: object = None  # Ảnh đối chứng chụp trước đó (tuân thủ hoặc t=0s)
+    reference_bbox: tuple = None    # Bounding box của người tại thời điểm chụp đối chứng (x1, y1, x2, y2)
     reference_type: str = "COMPLIANT"  # "COMPLIANT" | "START"
 
 
@@ -45,11 +46,11 @@ class ViolationConfirmation:
         # (person, violation_type) -> [start_t, acc, prev_t, was_candidate]
         self._streaks = {}
         self._emitted = set()
-        # Bộ đệm ảnh đối chứng: lưu frame hợp lệ gần nhất hoặc frame bắt đầu vi phạm
-        self._compliant_frames = {}  # pid -> frame (trạng thái tuân thủ)
-        self._start_frames = {}      # (pid, vt) -> frame (trạng thái bắt đầu vi phạm t=0s)
+        # Bộ đệm ảnh đối chứng: lưu (frame, bbox) hợp lệ gần nhất hoặc frame bắt đầu vi phạm
+        self._compliant_frames = {}  # pid -> (frame, bbox)
+        self._start_frames = {}      # (pid, vt) -> (frame, bbox)
 
-    def update(self, t, person_states, frame=None):
+    def update(self, t, person_states, frame=None, detections=None):
         """Nhận trạng thái VI-05 của một frame tại thời điểm t (giây).
 
         Trả danh sách ConfirmedViolation mới được xác nhận trong frame này.
@@ -57,11 +58,19 @@ class ViolationConfirmation:
         t = float(t)
         present = {}      # person_track_id -> PersonState
         candidates = set()  # (person, violation_type) đang là CANDIDATE frame này
+
+        # Trích xuất tọa độ bbox của từng person trong frame hiện tại
+        person_bboxes = {}
+        if detections is not None:
+            for d in detections:
+                if getattr(d, "class_name", "") == "person" and getattr(d, "track_id", None) is not None:
+                    person_bboxes[d.track_id] = tuple(d.bbox) if hasattr(d, "bbox") else None
+
         for s in person_states:
             present[s.person_track_id] = s
             if s.status == COMPLIANT and frame is not None:
-                # Cập nhật ảnh tuân thủ hợp lệ gần nhất cho track này
-                self._compliant_frames[s.person_track_id] = frame.copy()
+                # Cập nhật ảnh tuân thủ hợp lệ gần nhất kèm bbox của track này
+                self._compliant_frames[s.person_track_id] = (frame.copy(), person_bboxes.get(s.person_track_id))
             elif s.status == VIOLATION_CANDIDATE:
                 for vt in s.violations:
                     candidates.add((s.person_track_id, vt))
@@ -109,11 +118,18 @@ class ViolationConfirmation:
                 if key not in self._emitted and acc >= self.duration_s:
                     self._emitted.add(key)
                     # Chọn ảnh đối chứng: ưu tiên ảnh hợp lệ gần nhất, nếu không có thì dùng ảnh lúc bắt đầu t=0s
-                    ref_frame = self._compliant_frames.get(pid)
+                    ref_data = self._compliant_frames.get(pid)
                     ref_type = "COMPLIANT"
-                    if ref_frame is None:
-                        ref_frame = self._start_frames.get(key)
+                    if ref_data is None:
+                        ref_data = self._start_frames.get(key)
                         ref_type = "START"
+
+                    ref_frame = None
+                    ref_bbox = None
+                    if isinstance(ref_data, tuple):
+                        ref_frame, ref_bbox = ref_data
+                    else:
+                        ref_frame = ref_data
 
                     # SEC-26: Giải phóng frame t=0s trong _start_frames sau khi đã đính kèm vào event phát ra
                     self._start_frames.pop(key, None)
@@ -123,6 +139,7 @@ class ViolationConfirmation:
                         start_t=round(start_t, 3), confirmed_t=round(t, 3),
                         duration_s=round(acc, 3),
                         reference_frame=ref_frame,
+                        reference_bbox=ref_bbox,
                         reference_type=ref_type))
             elif s.status == COMPLIANT or s.status == VIOLATION_CANDIDATE:
                 # thấy lại PPE / vi phạm này đã hết (còn CANDIDATE loại khác) -> reset
@@ -137,7 +154,14 @@ class ViolationConfirmation:
             if key not in self._streaks:
                 self._streaks[key] = (t, 0.0, t, True)
                 if frame is not None:
-                    # Lưu frame tại giây 0s bắt đầu vi phạm
-                    self._start_frames[key] = frame.copy()
+                    # Lưu frame và bbox tại giây 0s bắt đầu vi phạm
+                    self._start_frames[key] = (frame.copy(), person_bboxes.get(key[0]))
 
         return confirmed
+
+    def reset(self):
+        """Reset toàn bộ chuỗi theo dõi và bộ đệm (dùng khi luồng ngắt quãng hoặc chuyển cảnh)."""
+        self._streaks.clear()
+        self._emitted.clear()
+        self._compliant_frames.clear()
+        self._start_frames.clear()

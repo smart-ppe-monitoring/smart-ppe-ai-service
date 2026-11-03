@@ -70,6 +70,16 @@ def run_tests():
     r = associate([D("person", 0, 0, 100, 300, tid=None)])
     check("person không track_id bị bỏ qua", r == [])
 
+    # 11. Người < 60px xuất hiện trước người hợp lệ >= 60px -> người hợp lệ không bị lệch index
+    tiny_person = D("person", 200, 200, 230, 230, tid=99)  # cao 30px < 60px
+    valid_person = D("person", 0, 0, 100, 300, tid=42)
+    helmet = D("helmet", 35, 10, 65, 40, tid=7)
+    vest = D("safety_vest", 10, 90, 90, 240, tid=9)
+    r = associate([tiny_person, valid_person, helmet, vest])
+    check("người sau người < 60px không bị lệch index và ghép đúng PPE",
+          len(r) == 2 and r[0].status == UNKNOWN and r[1].status == MATCHED and
+          r[1].helmet_track_id == 7 and r[1].vest_track_id == 9)
+
     return failed
 
 

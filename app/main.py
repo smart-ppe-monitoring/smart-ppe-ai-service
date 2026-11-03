@@ -40,6 +40,7 @@ from app.rules.deduplication import ViolationDeduplicator, ViolationEvent as Ded
 from app.evidence.snapshot import save_evidence
 from app.video.video_reader import VideoReader, VideoSourceError
 from app.video.visualizer import draw_detections
+from app.video.scene_cut import SceneCutDetector
 from app.schemas.violation_event import (
     ViolationEvent,
     Evidence,
@@ -201,6 +202,7 @@ def run_pipeline(
     out_dir: str = "outputs",
     show_every: int = 50,
     rules: Optional[SafetyRulesConfig] = None,
+    enable_scene_cut: Optional[bool] = None,
 ) -> int:
     """Run the video intelligence pipeline for a single source stream/file."""
     actual_source = source or config.VIDEO_SOURCE
@@ -239,6 +241,14 @@ def run_pipeline(
     confirmation = ViolationConfirmation(duration_s=confirmation_duration)
     dedup = ViolationDeduplicator(cooldown_s=cooldown_duration)
 
+    # SEC-30: Scene cut detection resets tracking & confirmation states.
+    # On live RTSP streams, lighting fluctuations (welding flash, headlights, exposure adjust)
+    # would trigger false resets and wipe ongoing violation confirmations.
+    # Therefore, auto-enable only for offline video files, and default to disabled for live streams.
+    if enable_scene_cut is None:
+        enable_scene_cut = not reader.is_stream
+    cut_detector = SceneCutDetector() if enable_scene_cut else None
+
     last_flush_t = time.time()
 
     register_signal_handlers()
@@ -248,140 +258,144 @@ def run_pipeline(
                 if _shutdown_requested:
                     logger.info("Termination signal received. Exiting frame loop cleanly.")
                     break
-            n_frames += 1
-            t0 = time.time()
-            detections = detector.detect(frame)
-            t_detect += time.time() - t0
+                if cut_detector and cut_detector.check(frame):
+                    logger.info("Scene cut detected at frame %d — resetting tracker and confirmation states", num)
+                    detector.reset_tracker()
+                    confirmation.reset()
+                n_frames += 1
+                t0 = time.time()
+                detections = detector.detect(frame)
+                t_detect += time.time() - t0
 
-            # Determine active required PPE rules based on dynamic rules configuration
-            enable_helmet = getattr(rules, "enable_no_helmet", True) if rules else True
-            enable_vest = getattr(rules, "enable_no_vest", True) if rules else True
+                # Determine active required PPE rules based on dynamic rules configuration
+                enable_helmet = getattr(rules, "enable_no_helmet", True) if rules else True
+                enable_vest = getattr(rules, "enable_no_vest", True) if rules else True
 
-            associations = associate(detections)
-            frame_h, frame_w = frame.shape[:2]
-            person_states = evaluate_safety(
-                detections,
-                associations,
-                frame_w,
-                frame_h,
-                enable_no_helmet=enable_helmet,
-                enable_no_vest=enable_vest,
-            )
-
-            t_frame = (num - 1) / (reader.fps if reader.fps > 0 else 25.0)
-            confirmed = confirmation.update(t_frame, person_states, frame=frame)
-
-            # Draw visual bboxes on output frame
-            draw_detections(frame, detections, person_states=person_states)
-
-            # Filter duplicates and produce final violations
-            for ev in dedup.filter(confirmed, detections, t_frame):
-                logger.warning(
-                    "VIOLATION CONFIRMED: camera=%s, person=#%d, type=%s, duration=%.1fs",
-                    ev.camera_id, ev.person_track_id, ev.violation_type, ev.duration_s,
+                associations = associate(detections)
+                frame_h, frame_w = frame.shape[:2]
+                person_states = evaluate_safety(
+                    detections,
+                    associations,
+                    frame_w,
+                    frame_h,
+                    enable_no_helmet=enable_helmet,
+                    enable_no_vest=enable_vest,
                 )
 
-                # 1. Save evidence snapshots locally (violation + reference)
-                evidence_res = save_evidence(frame, detections, ev, config.EVIDENCE_DIR)
-                snapshot_url = None
-                reference_snapshot_url = None
+                t_frame = (num - 1) / (reader.fps if reader.fps > 0 else 25.0)
+                confirmed = confirmation.update(t_frame, person_states, frame=frame, detections=detections)
 
-                # 2. Upload to MinIO if client is ready, otherwise use local path
-                if evidence_res.status == "saved" and evidence_res.path:
-                    try:
-                        from app.storage.minio_client import upload_snapshot
-                        with open(evidence_res.path, "rb") as f:
-                            img_bytes = f.read()
-                        snapshot_url = upload_snapshot(
-                            image_bytes=img_bytes,
-                            site_code=config.SITE_CODE,
-                            camera_code=ev.camera_id,
-                            track_id=ev.person_track_id,
-                        )
-                        logger.info("Uploaded snapshot to MinIO: %s", snapshot_url)
-                        # SEC-18: Cleanup local evidence file once successfully uploaded to MinIO
-                        try:
-                            Path(evidence_res.path).unlink(missing_ok=True)
-                        except Exception:
-                            pass
-                    except Exception as m_err:
-                        logger.debug("MinIO direct upload skipped (%s), using local reference: %s", m_err, evidence_res.path)
+                # Draw visual bboxes on output frame
+                draw_detections(frame, detections, person_states=person_states)
 
-                # 2b. Upload reference snapshot to MinIO if available
-                if evidence_res.status == "saved" and evidence_res.reference_path:
-                    try:
-                        from app.storage.minio_client import upload_snapshot
-                        with open(evidence_res.reference_path, "rb") as f:
-                            ref_bytes = f.read()
-                        # SEC-27: Pass suffix='ref' to avoid S3 key collision and overwrite of violation snapshot
-                        reference_snapshot_url = upload_snapshot(
-                            image_bytes=ref_bytes,
-                            site_code=config.SITE_CODE,
-                            camera_code=ev.camera_id,
-                            track_id=ev.person_track_id,
-                            suffix="ref",
-                        )
-                        logger.info("Uploaded reference snapshot to MinIO: %s", reference_snapshot_url)
-                        try:
-                            Path(evidence_res.reference_path).unlink(missing_ok=True)
-                        except Exception:
-                            pass
-                    except Exception as m_err:
-                        logger.debug("MinIO reference upload skipped (%s), using local reference", m_err)
-
-                # SEC-25: Construct valid HTTP edge gateway URL if MinIO upload failed or was skipped
-                edge_base = os.getenv("EDGE_GATEWAY_URL", f"{config.BACKEND_BASE_URL}/evidences").rstrip("/")
-                if not snapshot_url or not (str(snapshot_url).startswith("http://") or str(snapshot_url).startswith("https://")):
-                    evidence_file = Path(evidence_res.path).name if evidence_res.path else f"{ev.event_id}.jpg"
-                    snapshot_url = f"{edge_base}/{config.SITE_CODE}/{ev.camera_id}/{evidence_file}"
-
-                if evidence_res.reference_path and (not reference_snapshot_url or not (str(reference_snapshot_url).startswith("http://") or str(reference_snapshot_url).startswith("https://"))):
-                    ref_file = Path(evidence_res.reference_path).name
-                    reference_snapshot_url = f"{edge_base}/{config.SITE_CODE}/{ev.camera_id}/{ref_file}"
-
-                # 3. Build contract-compliant event
-                model_name = Path(config.YOLO_MODEL_PATH).name
-                contract_event = _build_violation_event(
-                    ev=ev,
-                    frame_w=frame_w,
-                    frame_h=frame_h,
-                    snapshot_url=snapshot_url,
-                    reference_snapshot_url=reference_snapshot_url,
-                    all_detections=detections,
-                    model_name=model_name,
-                )
-
-                # 4. Dispatch via Kafka -> HTTP fallback -> Offline Buffer
-                method = dispatch_event(contract_event)
-                logger.info("Event %s dispatched via [%s]", ev.event_id, method)
-
-            # Periodically flush offline buffer (every 10 seconds)
-            if time.time() - last_flush_t > 10.0:
-                last_flush_t = time.time()
-                flushed = flush_offline_buffer(sync=True)
-                if flushed > 0:
-                    logger.info("Flushed %d pending offline events", flushed)
-
-            # Optional output video recording
-            if config.SAVE_OUTPUT_VIDEO:
-                if writer is None:
-                    out_dir_path = Path(out_dir)
-                    out_dir_path.mkdir(parents=True, exist_ok=True)
-                    src_name = Path(str(actual_source)).stem if actual_source is not None else "stream"
-                    out_path = out_dir_path / f"{src_name}_det.mp4"
-                    writer = cv2.VideoWriter(
-                        str(out_path),
-                        cv2.VideoWriter_fourcc(*"mp4v"),
-                        reader.fps if reader.fps > 0 else 25.0,
-                        (frame_w, frame_h),
+                # Filter duplicates and produce final violations
+                for ev in dedup.filter(confirmed, detections, t_frame):
+                    logger.warning(
+                        "VIOLATION CONFIRMED: camera=%s, person=#%d, type=%s, duration=%.1fs",
+                        ev.camera_id, ev.person_track_id, ev.violation_type, ev.duration_s,
                     )
-                writer.write(frame)
 
-            if num % show_every == 0:
-                logger.info(
-                    "Processed frame %d — avg detect latency: %.1f ms/frame",
-                    num, (t_detect / n_frames * 1000.0) if n_frames > 0 else 0.0,
-                )
+                    # 1. Save evidence snapshots locally (violation + reference)
+                    evidence_res = save_evidence(frame, detections, ev, config.EVIDENCE_DIR)
+                    snapshot_url = None
+                    reference_snapshot_url = None
+
+                    # 2. Upload to MinIO if client is ready, otherwise use local path
+                    if evidence_res.status == "saved" and evidence_res.path:
+                        try:
+                            from app.storage.minio_client import upload_snapshot
+                            with open(evidence_res.path, "rb") as f:
+                                img_bytes = f.read()
+                            snapshot_url = upload_snapshot(
+                                image_bytes=img_bytes,
+                                site_code=config.SITE_CODE,
+                                camera_code=ev.camera_id,
+                                track_id=ev.person_track_id,
+                            )
+                            logger.info("Uploaded snapshot to MinIO: %s", snapshot_url)
+                            # SEC-18: Cleanup local evidence file once successfully uploaded to MinIO
+                            try:
+                                Path(evidence_res.path).unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                        except Exception as m_err:
+                            logger.debug("MinIO direct upload skipped (%s), using local reference: %s", m_err, evidence_res.path)
+
+                    # 2b. Upload reference snapshot to MinIO if available
+                    if evidence_res.status == "saved" and evidence_res.reference_path:
+                        try:
+                            from app.storage.minio_client import upload_snapshot
+                            with open(evidence_res.reference_path, "rb") as f:
+                                ref_bytes = f.read()
+                            # SEC-27: Pass suffix='ref' to avoid S3 key collision and overwrite of violation snapshot
+                            reference_snapshot_url = upload_snapshot(
+                                image_bytes=ref_bytes,
+                                site_code=config.SITE_CODE,
+                                camera_code=ev.camera_id,
+                                track_id=ev.person_track_id,
+                                suffix="ref",
+                            )
+                            logger.info("Uploaded reference snapshot to MinIO: %s", reference_snapshot_url)
+                            try:
+                                Path(evidence_res.reference_path).unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                        except Exception as m_err:
+                            logger.debug("MinIO reference upload skipped (%s), using local reference", m_err)
+
+                    # SEC-25: Construct valid HTTP edge gateway URL if MinIO upload failed or was skipped
+                    edge_base = os.getenv("EDGE_GATEWAY_URL", f"{config.BACKEND_BASE_URL}/evidences").rstrip("/")
+                    if not snapshot_url or not (str(snapshot_url).startswith("http://") or str(snapshot_url).startswith("https://")):
+                        evidence_file = Path(evidence_res.path).name if evidence_res.path else f"{ev.event_id}.jpg"
+                        snapshot_url = f"{edge_base}/{config.SITE_CODE}/{ev.camera_id}/{evidence_file}"
+
+                    if evidence_res.reference_path and (not reference_snapshot_url or not (str(reference_snapshot_url).startswith("http://") or str(reference_snapshot_url).startswith("https://"))):
+                        ref_file = Path(evidence_res.reference_path).name
+                        reference_snapshot_url = f"{edge_base}/{config.SITE_CODE}/{ev.camera_id}/{ref_file}"
+
+                    # 3. Build contract-compliant event
+                    model_name = Path(config.YOLO_MODEL_PATH).name
+                    contract_event = _build_violation_event(
+                        ev=ev,
+                        frame_w=frame_w,
+                        frame_h=frame_h,
+                        snapshot_url=snapshot_url,
+                        reference_snapshot_url=reference_snapshot_url,
+                        all_detections=detections,
+                        model_name=model_name,
+                    )
+
+                    # 4. Dispatch via Kafka -> HTTP fallback -> Offline Buffer
+                    method = dispatch_event(contract_event)
+                    logger.info("Event %s dispatched via [%s]", ev.event_id, method)
+
+                # Periodically flush offline buffer (every 10 seconds)
+                if time.time() - last_flush_t > 10.0:
+                    last_flush_t = time.time()
+                    flushed = flush_offline_buffer(sync=True)
+                    if flushed > 0:
+                        logger.info("Flushed %d pending offline events", flushed)
+
+                # Optional output video recording
+                if config.SAVE_OUTPUT_VIDEO:
+                    if writer is None:
+                        out_dir_path = Path(out_dir)
+                        out_dir_path.mkdir(parents=True, exist_ok=True)
+                        src_name = Path(str(actual_source)).stem if actual_source is not None else "stream"
+                        out_path = out_dir_path / f"{src_name}_det.mp4"
+                        writer = cv2.VideoWriter(
+                            str(out_path),
+                            cv2.VideoWriter_fourcc(*"mp4v"),
+                            reader.fps if reader.fps > 0 else 25.0,
+                            (frame_w, frame_h),
+                        )
+                    writer.write(frame)
+
+                if num % show_every == 0:
+                    logger.info(
+                        "Processed frame %d — avg detect latency: %.1f ms/frame",
+                        num, (t_detect / n_frames * 1000.0) if n_frames > 0 else 0.0,
+                    )
 
     finally:
         if writer:
@@ -407,6 +421,10 @@ async def async_main():
     parser.add_argument("--site-id", default=os.getenv("SITE_ID", config.SITE_CODE), help="Site identifier code or UUID")
     parser.add_argument("--out-dir", default="outputs", help="Directory for annotated output videos")
     parser.add_argument("--show-every", type=int, default=50, help="Log progress every N frames")
+    parser.add_argument("--enable-scene-cut", dest="enable_scene_cut", action="store_true", default=None,
+                        help="Enable scene cut detection (default: auto, enabled for video files, disabled on live streams)")
+    parser.add_argument("--disable-scene-cut", dest="enable_scene_cut", action="store_false",
+                        help="Disable scene cut detection")
     args = parser.parse_args()
 
     # Step 1: Dynamic safety rules retrieval from Backend (Effective rules for camera)
@@ -424,6 +442,7 @@ async def async_main():
         out_dir=args.out_dir,
         show_every=args.show_every,
         rules=rules,
+        enable_scene_cut=args.enable_scene_cut,
     )
 
 

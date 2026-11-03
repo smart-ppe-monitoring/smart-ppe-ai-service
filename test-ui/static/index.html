@@ -29,7 +29,7 @@
   .main { flex: 1; display: grid; grid-template-columns: 3fr 2fr; gap: 12px; padding: 12px; min-height: 0; }
   .pane { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 
-  #videoPane video { width: 100%; max-height: 68vh; background: #000; }
+  #videoPane video { width: 100%; max-height: 52vh; background: #000; border-radius: 4px; }
   #videoInfo { padding: 8px 12px; font-size: 13px; color: var(--dim); border-bottom: 1px solid var(--border); }
   #videoInfo b { color: var(--text); }
 
@@ -74,18 +74,61 @@
   .toolbar { display: flex; gap: 8px; align-items: center; padding: 8px 10px; font-size: 12px; color: var(--dim); }
   .toolbar input[type=number] { width: 70px; background: #0d1117; color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px; }
 
-  /* Dual-column Before/After evidence display */
-  #dualEvidenceSection { border-top: 1px solid var(--border); padding: 12px; background: #161b22; overflow-y: auto; max-height: 40vh; }
-  .dual-evidence-title { font-size: 13px; font-weight: 600; color: var(--accent); margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
-  .dual-card { border: 1px solid var(--border); border-radius: 6px; background: #0d1117; padding: 10px; margin-bottom: 12px; }
-  .dual-card-header { font-size: 12px; color: var(--text); margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
-  .dual-card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .dual-col { display: flex; flex-direction: column; gap: 4px; }
-  .dual-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 3px; text-transform: uppercase; width: fit-content; }
+  /* Navigation Bar & View Tabs */
+  .nav-bar { display: flex; align-items: center; justify-content: space-between; padding: 6px 16px; background: #161b22; border-bottom: 1px solid var(--border); }
+  .nav-tabs { display: flex; gap: 8px; }
+  .nav-tab { background: #0d1117; color: var(--dim); border: 1px solid var(--border); border-radius: 6px; padding: 6px 14px; font-size: 13px; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: all 0.15s ease; }
+  .nav-tab:hover { background: #1f242c; color: var(--text); border-color: #58a6ff55; }
+  .nav-tab.active { background: #1f2937; color: #58a6ff; border-color: var(--accent); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+  .nav-badge { background: #21262d; color: var(--text); padding: 1px 7px; border-radius: 10px; font-size: 11px; font-weight: 600; border: 1px solid var(--border); }
+  .nav-tab.active .nav-badge { background: rgba(88, 166, 255, 0.2); color: var(--accent); border-color: var(--accent); }
+  .nav-tools { display: flex; align-items: center; gap: 12px; }
+  .btn-tool { background: #21262d; color: var(--accent); border: 1px solid var(--border); border-radius: 5px; padding: 5px 12px; font-size: 12px; cursor: pointer; transition: all 0.15s ease; }
+  .btn-tool:hover { background: #30363d; border-color: var(--accent); }
+
+  /* Dual-column Before/After evidence display (Inline under Video) */
+  #dualEvidenceSection { border-top: 1px solid var(--border); padding: 14px; background: #13171f; }
+  .dual-evidence-title { font-size: 13.5px; font-weight: 600; color: var(--accent); margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
+  .dual-card { border: 1px solid var(--border); border-radius: 8px; background: #0d1117; padding: 12px; margin-bottom: 14px; transition: border-color 0.2s ease, box-shadow 0.2s ease; }
+  .dual-card:hover { border-color: #58a6ff66; box-shadow: 0 4px 14px rgba(0,0,0,0.35); }
+  .dual-card-header { font-size: 13px; color: var(--text); margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+  .dual-card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .dual-col { display: flex; flex-direction: column; gap: 6px; }
+  .dual-badge { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; width: fit-content; letter-spacing: 0.3px; }
   .dual-badge.ref { background: rgba(63, 185, 80, 0.15); color: var(--green); border: 1px solid var(--green); }
   .dual-badge.viol { background: rgba(248, 81, 73, 0.15); color: var(--red); border: 1px solid var(--red); }
-  .dual-col img { width: 100%; border: 1px solid var(--border); border-radius: 4px; aspect-ratio: 16/9; object-fit: contain; background: #000; cursor: pointer; }
-  .dual-col-caption { font-size: 11px; color: var(--dim); }
+  .dual-col img { width: 100%; max-height: 400px; object-fit: contain; background: #05070a; border: 1px solid var(--border); border-radius: 6px; cursor: zoom-in; transition: transform 0.15s ease, filter 0.15s ease; }
+  .dual-col img:hover { transform: scale(1.01); filter: brightness(1.05); border-color: var(--accent); }
+  .dual-col-caption { font-size: 11px; color: var(--dim); display: flex; justify-content: space-between; align-items: center; }
+
+  /* Dedicated Full-Screen Spacious Gallery View */
+  .gallery-view { flex: 1; padding: 20px 32px; overflow-y: auto; background: var(--bg); min-height: 0; }
+  .gallery-header { max-width: 1500px; margin: 0 auto 18px auto; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+  .gallery-title { font-size: 17px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 10px; }
+  .gallery-filters { display: flex; gap: 8px; align-items: center; }
+  .filter-btn { background: #161b22; color: var(--dim); border: 1px solid var(--border); border-radius: 5px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+  .filter-btn.active { background: #21262d; color: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .gallery-cards { max-width: 1500px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px; padding-bottom: 40px; }
+  .gallery-card { background: #161b22; border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); }
+  .gallery-card-header { font-size: 14px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #21262d; padding-bottom: 10px; }
+  .gallery-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .gallery-col { display: flex; flex-direction: column; gap: 8px; }
+  .gallery-col img { width: 100%; max-height: 560px; object-fit: contain; background: #05070a; border: 1px solid var(--border); border-radius: 8px; cursor: zoom-in; }
+  .gallery-col img:hover { border-color: var(--accent); }
+
+  /* Interactive Fullscreen Comparison Lightbox Modal */
+  .lightbox-modal { position: fixed; inset: 0; background: rgba(5, 7, 10, 0.92); backdrop-filter: blur(6px); z-index: 9999; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .lightbox-content { background: #161b22; border: 1px solid #30363d; border-radius: 10px; width: 96vw; max-width: 1650px; height: 94vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 24px 50px rgba(0,0,0,0.7); }
+  .lightbox-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: #0d1117; border-bottom: 1px solid #30363d; font-size: 14px; }
+  .lightbox-actions { display: flex; align-items: center; gap: 10px; }
+  .btn-lightbox { background: #21262d; color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 5px 12px; font-size: 12px; cursor: pointer; transition: all 0.15s ease; }
+  .btn-lightbox:hover { background: #30363d; border-color: var(--accent); color: var(--accent); }
+  .btn-lightbox-close { background: #da3633; color: #fff; border: none; border-radius: 5px; width: 28px; height: 28px; font-size: 14px; cursor: pointer; font-weight: bold; }
+  .btn-lightbox-close:hover { background: #f85149; }
+  .lightbox-body { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; overflow-y: auto; background: #090d13; }
+  .lightbox-col { display: flex; flex-direction: column; gap: 8px; align-items: center; justify-content: center; height: 100%; min-height: 0; }
+  .lightbox-col img { max-width: 100%; max-height: calc(94vh - 120px); object-fit: contain; border-radius: 6px; border: 1px solid var(--border); background: #000; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+  .lightbox-caption { font-size: 12px; color: var(--dim); text-align: center; }
 </style>
 </head>
 <body>
@@ -95,17 +138,38 @@
   <div id="uploadRow">
     <input type="file" id="fileInput" accept="video/*">
     <select id="modelSelector" style="background: #161b22; color: #58a6ff; border: 1px solid #30363d; border-radius: 4px; padding: 4px 8px; font-size: 13px; font-weight: 500;">
-      <option value="models/yolo11m-best.pt" selected>Model: yolo11m-best (40.5 MB)</option>
+      <option value="models/yolo11s_joint_phase3.pt" selected>Model: yolo11s_joint_phase3 (19.2 MB - Khuyến nghị)</option>
+      <option value="models/yolo11m-best.pt">Model: yolo11m-best (40.5 MB)</option>
       <option value="models/yolo11n-best.pt">Model: yolo11n-best (5.5 MB)</option>
+      <option value="models/yolo11n_joint_phase3.pt">Model: yolo11n_joint_phase3 (5.5 MB)</option>
     </select>
-    <button id="uploadBtn">Xử lý video</button>
-    <select id="jobSelector" style="display:none; background: #161b22; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 4px 8px; font-size: 13px;"></select>
+    <button id="uploadBtn" style="background: #238636; color: #fff; border: 1px solid rgba(240,246,252,0.1); border-radius: 4px; padding: 5px 12px; font-weight: 600; cursor: pointer;">Xử lý video</button>
+    <select id="jobSelector" style="background: #161b22; color: #58a6ff; border: 1px solid #58a6ff88; border-radius: 4px; padding: 4px 8px; font-size: 13px; font-weight: 500;">
+      <option value="">-- Đang tải video có sẵn... --</option>
+    </select>
     <progress id="progressBar" value="0" max="1" hidden></progress>
     <span id="statusText">Chọn video để bắt đầu (kết quả xử lý lưu tại test-ui/results/)</span>
   </div>
 </header>
 
-<div class="main">
+<div class="nav-bar">
+  <div class="nav-tabs">
+    <button id="tabPlayerBtn" class="nav-tab active" onclick="switchView('player')">
+      🎬 Video Player & Nhật Ký
+    </button>
+    <button id="tabGalleryBtn" class="nav-tab" onclick="switchView('gallery')">
+      📸 Bảng Đối Chứng Vi Phạm <span id="galleryCountBadge" class="nav-badge">0</span>
+    </button>
+  </div>
+  <div class="nav-tools">
+    <span id="jobInfoBadge" style="font-size: 12px; color: var(--dim);"></span>
+    <button id="expandViewBtn" class="btn-tool" onclick="switchView('gallery')">
+      ⛶ Mở rộng bảng đối chứng toàn màn hình
+    </button>
+  </div>
+</div>
+
+<div class="main" id="viewPlayer">
   <div class="pane" id="videoPane" style="overflow-y: auto;">
     <div id="videoInfo">Chưa có video — upload một video để xem kết quả detect + tracking.</div>
     <video id="video" controls></video>
@@ -118,7 +182,12 @@
     <div id="dualEvidenceSection" style="display: none;">
       <div class="dual-evidence-title">
         <span>📸 ĐỐI CHỨNG BẰNG CHỨNG VI PHẠM (BEFORE vs AFTER)</span>
-        <span id="dualEvidenceCount" style="font-size: 11px; color: var(--dim)"></span>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span id="dualEvidenceCount" style="font-size: 11px; color: var(--dim)"></span>
+          <button class="btn-tool" style="font-size: 11px; padding: 3px 8px;" onclick="switchView('gallery')">
+            ⛶ Phóng to toàn màn hình
+          </button>
+        </div>
       </div>
       <div id="dualEvidenceContainer"></div>
     </div>
@@ -162,6 +231,52 @@
   </div>
 </div>
 
+<!-- VIEW 2: DEDICATED FULL-WIDTH SPACIOUS GALLERY VIEW -->
+<div id="viewGallery" style="display: none;" class="gallery-view">
+  <div class="gallery-header">
+    <div class="gallery-title">
+      <span>📸 BẢNG ĐỐI CHỨNG BẰNG CHỨNG VI PHẠM (TRƯỚC vs SAU)</span>
+      <span id="galleryTotalBadge" class="nav-badge" style="font-size: 13px;">0 sự cố</span>
+    </div>
+    <div class="gallery-filters">
+      <span style="font-size: 12px; color: var(--dim);">Lọc:</span>
+      <button id="filterAll" class="filter-btn active" onclick="setEvidenceFilter('ALL')">Tất cả</button>
+      <button id="filterHelmet" class="filter-btn" onclick="setEvidenceFilter('no_helmet')">Thiếu mũ</button>
+      <button id="filterVest" class="filter-btn" onclick="setEvidenceFilter('no_safety_vest')">Thiếu áo</button>
+      <button class="btn-tool" style="margin-left: 10px;" onclick="switchView('player')">◀ Quay lại Video Player</button>
+    </div>
+  </div>
+  <div id="galleryContainer" class="gallery-cards"></div>
+</div>
+
+<!-- INTERACTIVE FULLSCREEN COMPARISON LIGHTBOX MODAL -->
+<div id="lightboxModal" class="lightbox-modal" style="display: none;" onclick="closeLightbox(event)">
+  <div class="lightbox-content" onclick="event.stopPropagation()">
+    <div class="lightbox-header">
+      <div id="lightboxTitle" style="font-weight: 600; color: var(--text);"></div>
+      <div class="lightbox-actions">
+        <button id="lightboxPrevBtn" class="btn-lightbox" onclick="lightboxNav(-1)">◀ Sự cố trước</button>
+        <span id="lightboxIndex" style="font-size: 13px; color: var(--dim); padding: 0 4px;">1 / 1</span>
+        <button id="lightboxNextBtn" class="btn-lightbox" onclick="lightboxNav(1)">Sự cố tiếp ▶</button>
+        <button id="lightboxJumpBtn" class="btn-lightbox" style="color: var(--accent); border-color: var(--accent);">▶ Nhảy tới frame trong video</button>
+        <button class="btn-lightbox-close" onclick="closeLightbox()" title="Đóng (Esc)">✕</button>
+      </div>
+    </div>
+    <div class="lightbox-body">
+      <div class="lightbox-col">
+        <span class="dual-badge ref" style="margin-bottom: 8px;">📷 ẢNH ĐỐI CHỨNG (TRƯỚC VI PHẠM / T=0s)</span>
+        <img id="lightboxRefImg" src="" alt="Ảnh đối chứng">
+        <span class="lightbox-caption">Trạng thái tuân thủ hợp lệ gần nhất hoặc frame T=0s bắt đầu chuỗi vi phạm</span>
+      </div>
+      <div class="lightbox-col">
+        <span class="dual-badge viol" style="margin-bottom: 8px;">🚨 ẢNH VI PHẠM (XÁC NHẬN 2S)</span>
+        <img id="lightboxViolImg" src="" alt="Ảnh vi phạm">
+        <span class="lightbox-caption">Được gắn nhãn nhận diện, đóng khung vi phạm và phủ lớp đỏ bán trong suốt</span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 const state = { jobId: null, fps: 25, entries: [], meta: null,
                 personTracks: [], violations: [], evidence: [] };
@@ -195,17 +310,31 @@ $("fileInput").onchange = () => {
 $("uploadBtn").onclick = async () => {
   const file = $("fileInput").files[0];
   if (!file) { setStatus("Hãy chọn file video trước.", true); return; }
-  const model = $("modelSelector")?.value || "models/yolo11m-best.pt";
+  const model = $("modelSelector")?.value || "models/yolo11s_joint_phase3.pt";
   const modelName = model.split("/").pop();
   setStatus(`Đang upload & khởi chạy với ${modelName}...`);
-  const fd = new FormData();
-  fd.append("file", file);
-  const r = await fetch("/api/upload", { method: "POST", body: fd });
-  const d = await r.json();
-  state.jobId = d.job_id;
-  await fetch(`/api/jobs/${state.jobId}/start?model=${encodeURIComponent(model)}`, { method: "POST" });
-  $("progressBar").hidden = false;
-  poll();
+  try {
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await fetch("/api/upload", { method: "POST", body: fd });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ detail: r.statusText }));
+      setStatus(`Lỗi upload: ${err.detail || r.statusText}`, true);
+      return;
+    }
+    const d = await r.json();
+    state.jobId = d.job_id;
+    const startRes = await fetch(`/api/jobs/${state.jobId}/start?model=${encodeURIComponent(model)}`, { method: "POST" });
+    if (!startRes.ok) {
+      const err = await startRes.json().catch(() => ({ detail: startRes.statusText }));
+      setStatus(`Lỗi khởi chạy: ${err.detail || startRes.statusText}`, true);
+      return;
+    }
+    $("progressBar").hidden = false;
+    poll();
+  } catch (err) {
+    setStatus(`Lỗi kết nối: ${err.message}`, true);
+  }
 };
 
 function setStatus(msg, isError = false) {
@@ -251,6 +380,9 @@ async function loadResult() {
   $("videoInfo").innerHTML =
     `File: <b>${safeSource}</b> | ${w}x${h} | <b>${escapeHtml(m.total_frames || 0)}</b> frame | ` +
     `<b>${fpsText}</b> fps | Model: <b>${safeModel}</b>`;
+  if ($("jobInfoBadge")) {
+    $("jobInfoBadge").textContent = `${m.source || state.jobId} (${m.total_frames || 0} frames)`;
+  }
   setStatus("Xong. Phát video và theo dõi log bên phải.");
   renderViolations();
   renderEvidence();
@@ -282,7 +414,162 @@ function renderViolations() {
     `<span style="color:var(--dim)">chưa có vi phạm nào đủ ${escapeHtml(state.meta?.confirmation_duration_s ?? 3)} giây liên tục (VI-06) và không trùng trong 30 giây (VI-07)</span>`;
 }
 
-// ---------- bằng chứng vi phạm (VI-08) ----------
+// ---------- bằng chứng vi phạm (VI-08) & Đối chứng kép ----------
+let currentView = 'player';
+let currentSavedEvs = [];
+let currentEvidenceFilter = 'ALL';
+let currentLightboxIdx = 0;
+
+function switchView(view) {
+  currentView = view;
+  const viewPlayer = $("viewPlayer");
+  const viewGallery = $("viewGallery");
+  const tabPlayerBtn = $("tabPlayerBtn");
+  const tabGalleryBtn = $("tabGalleryBtn");
+
+  if (view === 'gallery') {
+    if (viewPlayer) viewPlayer.style.display = 'none';
+    if (viewGallery) viewGallery.style.display = 'block';
+    if (tabPlayerBtn) tabPlayerBtn.classList.remove('active');
+    if (tabGalleryBtn) tabGalleryBtn.classList.add('active');
+    renderGallery();
+  } else {
+    if (viewPlayer) viewPlayer.style.display = 'grid';
+    if (viewGallery) viewGallery.style.display = 'none';
+    if (tabPlayerBtn) tabPlayerBtn.classList.add('active');
+    if (tabGalleryBtn) tabGalleryBtn.classList.remove('active');
+  }
+}
+
+function setEvidenceFilter(filter) {
+  currentEvidenceFilter = filter;
+  ['filterAll', 'filterHelmet', 'filterVest'].forEach(id => {
+    const el = $(id);
+    if (el) el.classList.remove('active');
+  });
+  if (filter === 'no_helmet') $('filterHelmet')?.classList.add('active');
+  else if (filter === 'no_safety_vest') $('filterVest')?.classList.add('active');
+  else $('filterAll')?.classList.add('active');
+  renderGallery();
+}
+
+function openLightbox(index) {
+  if (!currentSavedEvs.length) return;
+  currentLightboxIdx = Math.max(0, Math.min(index, currentSavedEvs.length - 1));
+  const ev = currentSavedEvs[currentLightboxIdx];
+  const v = state.violations.find(x => x.event_id === ev.event_id);
+  const safeJobId = encodeURIComponent(state.jobId || "");
+  const safeEvId = encodeURIComponent(ev.event_id || "");
+  const vt = v ? (VT_LABEL[v.violation_type] || v.violation_type) : "Vi phạm PPE";
+  const pid = v ? v.person : "—";
+  const dur = v && typeof v.duration_s === "number" ? v.duration_s.toFixed(1) : "2.0";
+  const seekFrame = parseInt(ev.frame) || 1;
+  const refSrc = `/api/jobs/${safeJobId}/evidence/${safeEvId}_ref.jpg`;
+  const violSrc = `/api/jobs/${safeJobId}/evidence/${safeEvId}.jpg`;
+
+  $("lightboxTitle").innerHTML = `<b>Người #${escapeHtml(pid)}: ${escapeHtml(vt)}</b> <span style="color:var(--dim)">(kéo dài ${escapeHtml(dur)}s liên tục — Frame ${escapeHtml(ev.frame)})</span>`;
+  $("lightboxIndex").textContent = `${currentLightboxIdx + 1} / ${currentSavedEvs.length}`;
+
+  const refImg = $("lightboxRefImg");
+  refImg.src = refSrc;
+  refImg.onerror = () => { refImg.src = violSrc; };
+
+  $("lightboxViolImg").src = violSrc;
+
+  $("lightboxJumpBtn").onclick = () => {
+    closeLightbox();
+    switchView('player');
+    seekToFrame(seekFrame);
+  };
+
+  $("lightboxModal").style.display = "flex";
+}
+
+function closeLightbox(event) {
+  if (event && event.target && event.target.id !== "lightboxModal" && !event.target.classList.contains("btn-lightbox-close")) return;
+  $("lightboxModal").style.display = "none";
+}
+
+function lightboxNav(delta) {
+  if (!currentSavedEvs.length) return;
+  let nextIdx = currentLightboxIdx + delta;
+  if (nextIdx < 0) nextIdx = currentSavedEvs.length - 1;
+  if (nextIdx >= currentSavedEvs.length) nextIdx = 0;
+  openLightbox(nextIdx);
+}
+
+document.addEventListener("keydown", (e) => {
+  const modal = $("lightboxModal");
+  if (modal && modal.style.display === "flex") {
+    if (e.key === "Escape") closeLightbox();
+    else if (e.key === "ArrowLeft") lightboxNav(-1);
+    else if (e.key === "ArrowRight") lightboxNav(1);
+  }
+});
+
+function renderGallery() {
+  const container = $("galleryContainer");
+  if (!container) return;
+  if (!currentSavedEvs.length) {
+    container.innerHTML = `<div style="text-align: center; color: var(--dim); padding: 50px; font-size: 15px;">Chưa có bằng chứng vi phạm nào được lưu trữ cho video này.</div>`;
+    return;
+  }
+
+  let filtered = currentSavedEvs;
+  if (currentEvidenceFilter !== 'ALL') {
+    filtered = currentSavedEvs.filter(ev => {
+      const v = state.violations.find(x => x.event_id === ev.event_id);
+      return v && v.violation_type === currentEvidenceFilter;
+    });
+  }
+
+  container.innerHTML = filtered.map((ev) => {
+    const rawIdx = currentSavedEvs.indexOf(ev);
+    const v = state.violations.find(x => x.event_id === ev.event_id);
+    const safeJobId = encodeURIComponent(state.jobId || "");
+    const safeEvId = encodeURIComponent(ev.event_id || "");
+    const vt = v ? (VT_LABEL[v.violation_type] || v.violation_type) : "Vi phạm PPE";
+    const pid = v ? v.person : "—";
+    const dur = v && typeof v.duration_s === "number" ? v.duration_s.toFixed(1) : "2.0";
+    const seekFrame = parseInt(ev.frame) || 1;
+    const refSrc = `/api/jobs/${safeJobId}/evidence/${safeEvId}_ref.jpg`;
+    const violSrc = `/api/jobs/${safeJobId}/evidence/${safeEvId}.jpg`;
+
+    return `
+      <div class="gallery-card">
+        <div class="gallery-card-header">
+          <div>
+            <span style="font-size: 15px; font-weight: 600; color: #fff;">Sự cố #${rawIdx + 1} — Người #${escapeHtml(pid)}: <span style="color:var(--red)">${escapeHtml(vt)}</span></span>
+            <span style="color: var(--dim); margin-left: 10px; font-size: 13px;">(kéo dài ${escapeHtml(dur)}s liên tục · Frame ${escapeHtml(ev.frame)} · Camera ${escapeHtml(v?.camera_id || '')})</span>
+          </div>
+          <div style="display: flex; gap: 10px; align-items: center;">
+            <button class="btn-tool" onclick="openLightbox(${rawIdx})">🔍 Phóng to toàn màn hình</button>
+            <button class="btn-tool" style="color: var(--accent); border-color: var(--accent);" onclick="switchView('player');seekToFrame(${seekFrame});">▶ Xem tại Frame ${escapeHtml(ev.frame)}</button>
+          </div>
+        </div>
+        <div class="gallery-grid">
+          <div class="gallery-col" onclick="openLightbox(${rawIdx})" style="cursor: pointer;" title="Bấm để mở phóng to ảnh chi tiết">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span class="dual-badge ref">📷 CỘT 1: ẢNH ĐỐI CHỨNG (TRƯỚC ĐÓ / T=0s)</span>
+              <span style="font-size: 12px; color: var(--green);">Trạng thái tuân thủ gần nhất 🔍</span>
+            </div>
+            <img loading="lazy" src="${refSrc}" alt="Ảnh đối chứng #${escapeHtml(pid)}" onerror="this.onerror=null;this.src='${violSrc}';">
+            <span class="dual-col-caption">Ảnh đối chứng chụp trước vi phạm hoặc tại thời điểm bắt đầu t=0s</span>
+          </div>
+          <div class="gallery-col" onclick="openLightbox(${rawIdx})" style="cursor: pointer;" title="Bấm để mở phóng to ảnh chi tiết">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span class="dual-badge viol">🚨 CỘT 2: ẢNH VI PHẠM (XÁC NHẬN 2S)</span>
+              <span style="font-size: 12px; color: var(--red);">Phát hiện vi phạm liên tục ≥ 2s 🔍</span>
+            </div>
+            <img loading="lazy" src="${violSrc}" alt="Ảnh vi phạm #${escapeHtml(pid)}">
+            <span class="dual-col-caption">Ảnh bằng chứng có khoanh vùng HUD và phủ lớp màu đỏ cảnh báo vi phạm</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
 function renderEvidence() {
   const btn = $("evidenceBtn");
   const dualSec = $("dualEvidenceSection");
@@ -292,6 +579,8 @@ function renderEvidence() {
     btn.hidden = true;
     $("evidenceBox").hidden = true;
     if (dualSec) dualSec.style.display = "none";
+    $("galleryCountBadge").textContent = "0";
+    currentSavedEvs = [];
     return;
   }
   btn.hidden = false;
@@ -325,11 +614,15 @@ function renderEvidence() {
 
   // Render song song 2 cột ảnh (Cột 1: Đối chứng, Cột 2: Vi phạm) ngay dưới video stream
   const savedEvs = state.evidence.filter(x => x.status === "saved");
+  currentSavedEvs = savedEvs;
+  $("galleryCountBadge").textContent = String(savedEvs.length);
+  if ($("galleryTotalBadge")) $("galleryTotalBadge").textContent = `${savedEvs.length} sự cố`;
+
   if (savedEvs.length && dualSec && dualContainer) {
     dualSec.style.display = "block";
     const countBadge = $("dualEvidenceCount");
     if (countBadge) countBadge.textContent = `(${savedEvs.length} sự cố)`;
-    dualContainer.innerHTML = savedEvs.map(ev => {
+    dualContainer.innerHTML = savedEvs.map((ev, idx) => {
       const v = state.violations.find(x => x.event_id === ev.event_id);
       const safeJobId = encodeURIComponent(state.jobId || "");
       const safeEvId = encodeURIComponent(ev.event_id || "");
@@ -344,22 +637,21 @@ function renderEvidence() {
         <div class="dual-card">
           <div class="dual-card-header">
             <span><b>Người #${escapeHtml(pid)}: ${escapeHtml(vt)}</b> (kéo dài ${escapeHtml(dur)}s liên tục)</span>
-            <a href="#" onclick="seekToFrame(${seekFrame});return false" style="color:var(--accent);text-decoration:none;">▶ Nhảy tới frame ${escapeHtml(ev.frame)}</a>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <button class="btn-tool" style="font-size: 11px; padding: 2px 8px;" onclick="openLightbox(${idx})">🔍 Phóng to</button>
+              <a href="#" onclick="seekToFrame(${seekFrame});return false" style="color:var(--accent);text-decoration:none;font-size:12px;">▶ Nhảy tới frame ${escapeHtml(ev.frame)}</a>
+            </div>
           </div>
           <div class="dual-card-grid">
-            <div class="dual-col">
+            <div class="dual-col" onclick="openLightbox(${idx})" style="cursor: pointer;" title="Bấm để phóng to đối chứng">
               <span class="dual-badge ref">📷 CỘT 1: ẢNH ĐỐI CHỨNG (TRƯỚC VI PHẠM)</span>
-              <a href="${refSrc}" target="_blank" title="Bấm để mở ảnh gốc">
-                <img loading="lazy" src="${refSrc}" alt="Ảnh đối chứng #${escapeHtml(pid)}" onerror="this.onerror=null;this.src='${violSrc}';">
-              </a>
-              <span class="dual-col-caption">Trạng thái tuân thủ gần nhất hoặc frame T=0s</span>
+              <img loading="lazy" src="${refSrc}" alt="Ảnh đối chứng #${escapeHtml(pid)}" onerror="this.onerror=null;this.src='${violSrc}';">
+              <span class="dual-col-caption">Trạng thái tuân thủ gần nhất hoặc frame T=0s <span style="color: var(--accent);">🔍 Bấm phóng to</span></span>
             </div>
-            <div class="dual-col">
+            <div class="dual-col" onclick="openLightbox(${idx})" style="cursor: pointer;" title="Bấm để phóng to đối chứng">
               <span class="dual-badge viol">🚨 CỘT 2: ẢNH VI PHẠM (XÁC NHẬN 2S)</span>
-              <a href="${violSrc}" target="_blank" title="Bấm để mở ảnh gốc">
-                <img loading="lazy" src="${violSrc}" alt="Ảnh vi phạm #${escapeHtml(pid)}">
-              </a>
-              <span class="dual-col-caption">Phát hiện vi phạm liên tục $\ge 2s$ (có lớp đỏ phủ nhận diện)</span>
+              <img loading="lazy" src="${violSrc}" alt="Ảnh vi phạm #${escapeHtml(pid)}">
+              <span class="dual-col-caption">Phát hiện vi phạm liên tục ≥ 2s (có khung HUD) <span style="color: var(--accent);">🔍 Bấm phóng to</span></span>
             </div>
           </div>
         </div>
@@ -367,6 +659,11 @@ function renderEvidence() {
     }).join("");
   } else if (dualSec) {
     dualSec.style.display = "none";
+  }
+
+  // Cập nhật lại gallery nếu đang ở tab gallery
+  if (currentView === 'gallery') {
+    renderGallery();
   }
 }
 
@@ -551,7 +848,17 @@ async function loadAvailableJobs() {
         setStatus(`Đang tải kết quả ${state.jobId}...`);
         await loadResult();
       };
-      if (state.jobId) sel.value = state.jobId;
+      if (state.jobId) {
+        sel.value = state.jobId;
+      } else if (jobs.length > 0) {
+        // Tự động tải video mặc định nếu người dùng chưa chọn
+        const defaultJob = jobs.find(j => j.job_id === 'video5') || jobs.find(j => j.job_id === 'video2') || jobs[0];
+        state.jobId = defaultJob.job_id;
+        sel.value = state.jobId;
+        loadResult();
+      }
+    } else {
+      sel.innerHTML = '<option value="">-- Chưa có video xử lý sẵn --</option>';
     }
   } catch (e) {
     console.error("Không thể tải danh sách jobs:", e);

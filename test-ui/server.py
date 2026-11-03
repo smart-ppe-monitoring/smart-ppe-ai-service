@@ -34,6 +34,7 @@ from app.rules.deduplication import ViolationDeduplicator
 from app.evidence.snapshot import save_evidence
 from app.config import CONFIRMATION_DURATION_S
 from app.video.visualizer import draw_detections
+from app.video.scene_cut import SceneCutDetector
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -175,6 +176,11 @@ def process_video(job_id, video_path, model_path=None):
                            total_frames=total, fps=fps,
                            size=[w, h], model=detector.model_path)
 
+            ev_dir = paths["dir"] / "evidences"
+            if ev_dir.exists():
+                shutil.rmtree(ev_dir, ignore_errors=True)
+            ev_dir.mkdir(parents=True, exist_ok=True)
+
             writer = cv2.VideoWriter(str(paths["video"]),
                                      cv2.VideoWriter_fourcc(*"mp4v"),
                                      reader.fps, (w, h))
@@ -182,15 +188,19 @@ def process_video(job_id, video_path, model_path=None):
             known_classes = {}  # track_id -> class_name (nhớ từ frame trước để ghi sự kiện "biến mất")
             confirmation = ViolationConfirmation()
             dedup = ViolationDeduplicator()
+            cut_detector = SceneCutDetector()
             with open(paths["log"], "w", encoding="utf-8") as logf:
                 for num, frame in reader:
+                    if cut_detector.check(frame):
+                        detector.reset_tracker()
+                        confirmation.reset()
                     detections = detector.detect(frame)
                     associations = associate(detections)
                     person_states = evaluate_safety(detections, associations, w, h)
                     t_frame = round((num - 1) / reader.fps, 3)
-                    confirmations = confirmation.update(t_frame, person_states, frame=frame)
+                    confirmations = confirmation.update(t_frame, person_states, frame=frame, detections=detections)
                     violation_events = dedup.filter(confirmations, detections, t_frame)
-                    draw_detections(frame, detections)
+                    draw_detections(frame, detections, person_states=person_states)
                     evidence_results = [save_evidence(frame, detections, ev, paths["dir"] / "evidences")
                                         for ev in violation_events]
 

@@ -38,6 +38,7 @@ class ViolationEvent:
     confirmed_t: float
     duration_s: float
     reference_frame: object = None  # Frame đối chứng trước đó
+    reference_bbox: tuple = None    # Bounding box của người tại thời điểm đối chứng
     reference_type: str = "COMPLIANT"
 
 
@@ -158,6 +159,7 @@ class ViolationDeduplicator:
                 confirmed_t=c.confirmed_t,
                 duration_s=c.duration_s,
                 reference_frame=getattr(c, "reference_frame", None),
+                reference_bbox=getattr(c, "reference_bbox", None),
                 reference_type=getattr(c, "reference_type", "COMPLIANT"),
             ))
         return out

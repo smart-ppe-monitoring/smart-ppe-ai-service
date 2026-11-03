@@ -120,8 +120,10 @@ def associate(detections, min_height=MIN_PERSON_HEIGHT_PX):
 
     ok_idx = [i for i, p in enumerate(persons)
               if (p.bbox[3] - p.bbox[1]) >= min_height]
-    helmet_map = _assign([persons[i].bbox for i in ok_idx], _helmet_candidates, helmets)
-    vest_map = _assign([persons[i].bbox for i in ok_idx], _vest_candidates, vests)
+    raw_helmet_map = _assign([persons[i].bbox for i in ok_idx], _helmet_candidates, helmets)
+    raw_vest_map = _assign([persons[i].bbox for i in ok_idx], _vest_candidates, vests)
+    helmet_map = {ok_idx[j]: tid for j, tid in raw_helmet_map.items()}
+    vest_map = {ok_idx[j]: tid for j, tid in raw_vest_map.items()}
 
     results = []
     for i, p in enumerate(persons):

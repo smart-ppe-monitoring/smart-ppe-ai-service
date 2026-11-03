@@ -67,6 +67,31 @@ def _draw_reference_overlay(img, label):
     cv2.putText(img, label, (12, int(banner_h * 0.7)), cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), 2)
 
 
+def _draw_reference_box(img, bbox, track_id, ref_type="COMPLIANT"):
+    """Vẽ bounding box bao quanh người được đối chứng (để phân biệt rõ trong cảnh đông người)."""
+    x1, y1, x2, y2 = (int(v) for v in bbox)
+    h, w = img.shape[:2]
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(w, x2), min(h, y2)
+    if x2 <= x1 or y2 <= y1:
+        return
+
+    # Màu sắc: Xanh lá (0, 204, 0) nếu tuân thủ, Xanh cyan/cam (255, 180, 0) nếu t=0s
+    color = (0, 204, 0) if ref_type == "COMPLIANT" else (255, 180, 0)
+    label = f"DOI CHUNG: NGUOI #{track_id}" + (" (HOP LE)" if ref_type == "COMPLIANT" else " (T=0s)")
+
+    # Vẽ viền dày 3px nổi bật
+    cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
+
+    # Vẽ nhãn phía trên bbox
+    scale = max(0.55, (x2 - x1) / 320.0)
+    (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, scale, 2)
+    ty = max(y1 - th - 8, 10)
+    cv2.rectangle(img, (x1, ty - th - 4), (x1 + tw + 8, ty + baseline + 2), color, -1)
+    text_color = (0, 0, 0) if ref_type != "COMPLIANT" else (255, 255, 255)
+    cv2.putText(img, label, (x1 + 4, ty), cv2.FONT_HERSHEY_SIMPLEX, scale, text_color, 2)
+
+
 def save_evidence(frame, detections, event, out_dir) -> EvidenceResult:
     """Lưu frame vi phạm `<out_dir>/<event.event_id>.jpg` và ảnh đối chứng `<event.event_id>_ref.jpg`.
 
@@ -95,11 +120,17 @@ def save_evidence(frame, detections, event, out_dir) -> EvidenceResult:
         # Lưu ảnh đối chứng nếu có trong event
         ref_dest_str = ""
         ref_frame = getattr(event, "reference_frame", None)
+        ref_bbox = getattr(event, "reference_bbox", None)
         if ref_frame is not None:
             try:
                 ref_snap = ref_frame.copy()
                 ref_type = getattr(event, "reference_type", "COMPLIANT")
-                ref_label = "ANH DOI CHUNG: TRANG THAI HOP LE (BEFORE)" if ref_type == "COMPLIANT" else "ANH DOI CHUNG: BAT DAU VI PHAM (T=0s)"
+                # 1. Vẽ bounding box lên người được đối chứng nếu có tọa độ bbox
+                if ref_bbox is not None:
+                    _draw_reference_box(ref_snap, ref_bbox, event.person_track_id, ref_type)
+
+                # 2. Vẽ banner thông tin trên đầu ảnh
+                ref_label = "ANH DOI CHUNG: TRANG THAI HOP LE (BEFORE)" if ref_type == "COMPLIANT" else "ANH DOI CHUNG: BAT DAU THEO DOI (T=0s)"
                 _draw_reference_overlay(ref_snap, ref_label)
                 ok_ref, buf_ref = cv2.imencode(".jpg", ref_snap)
                 if ok_ref:

@@ -59,3 +59,12 @@ class Detector:
             results = self._model.predict(frame, **kwargs)
         h, w = frame.shape[:2]
         return normalize_results(results[0], w, h)
+
+    def reset_tracker(self):
+        """Xóa trạng thái bộ theo dõi (ByteTrack/BoT-SORT) khi ngắt luồng hoặc chuyển cảnh."""
+        if self._model is not None and hasattr(self._model, 'predictor') and self._model.predictor is not None:
+            trackers = getattr(self._model.predictor, 'trackers', None)
+            if trackers:
+                for tr in trackers:
+                    if hasattr(tr, 'reset'):
+                        tr.reset()

@@ -95,6 +95,7 @@ def run_tests():
         # 9. Có reference_frame -> lưu thêm file đối chứng <event_id>_ref.jpg
         ev_ref = ev("888888888888")
         ev_ref.reference_frame = fake_frame(64, 48)
+        ev_ref.reference_bbox = (10, 10, 50, 40)
         ev_ref.reference_type = "COMPLIANT"
         r8 = save_evidence(fake_frame(64, 48), [D("person", 10, 10, 50, 40, tid=1)],
                            ev_ref, Path(tmp) / "ev")
