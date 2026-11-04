@@ -39,6 +39,10 @@ SEVERITY_LOW = "LOW"
 # ─── Safety Rule Defaults (fallback if API unreachable) ──────────────────────
 DEFAULT_CONFIDENCE_THRESHOLD: float = 0.8
 DEFAULT_CONFIRMATION_DURATION_S: int = 2       # seconds
+DEFAULT_CONFIRMATION_DURATION_HELMET_S: float = 2.0  # seconds
+DEFAULT_CONFIRMATION_DURATION_VEST_S: float = 4.0    # seconds (allows transient profile turns/occlusion)
+DEFAULT_PROFILE_ASPECT_RATIO_MIN: float = 0.24       # below this W/H ratio, person is in profile view
+DEFAULT_COMPLIANT_GRACE_PERIOD_S: float = 1.0        # grace period before starting candidate streak
 DEFAULT_COOLDOWN_DURATION_S: int = 30           # seconds
 
 # ─── Violation States ─────────────────────────────────────────────────────────

@@ -269,7 +269,7 @@
         <span class="lightbox-caption">Trạng thái tuân thủ hợp lệ gần nhất hoặc frame T=0s bắt đầu chuỗi vi phạm</span>
       </div>
       <div class="lightbox-col">
-        <span class="dual-badge viol" style="margin-bottom: 8px;">🚨 ẢNH VI PHẠM (XÁC NHẬN 2S)</span>
+        <span class="dual-badge viol" style="margin-bottom: 8px;">🚨 ẢNH VI PHẠM (ĐÃ XÁC NHẬN)</span>
         <img id="lightboxViolImg" src="" alt="Ảnh vi phạm">
         <span class="lightbox-caption">Được gắn nhãn nhận diện, đóng khung vi phạm và phủ lớp đỏ bán trong suốt</span>
       </div>
@@ -558,8 +558,8 @@ function renderGallery() {
           </div>
           <div class="gallery-col" onclick="openLightbox(${rawIdx})" style="cursor: pointer;" title="Bấm để mở phóng to ảnh chi tiết">
             <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span class="dual-badge viol">🚨 CỘT 2: ẢNH VI PHẠM (XÁC NHẬN 2S)</span>
-              <span style="font-size: 12px; color: var(--red);">Phát hiện vi phạm liên tục ≥ 2s 🔍</span>
+              <span class="dual-badge viol">🚨 CỘT 2: ẢNH VI PHẠM (XÁC NHẬN ${dur ? dur + 'S' : 'ĐÃ ĐẠT'})</span>
+              <span style="font-size: 12px; color: var(--red);">Phát hiện vi phạm liên tục 🔍</span>
             </div>
             <img loading="lazy" src="${violSrc}" alt="Ảnh vi phạm #${escapeHtml(pid)}">
             <span class="dual-col-caption">Ảnh bằng chứng có khoanh vùng HUD và phủ lớp màu đỏ cảnh báo vi phạm</span>
@@ -649,9 +649,9 @@ function renderEvidence() {
               <span class="dual-col-caption">Trạng thái tuân thủ gần nhất hoặc frame T=0s <span style="color: var(--accent);">🔍 Bấm phóng to</span></span>
             </div>
             <div class="dual-col" onclick="openLightbox(${idx})" style="cursor: pointer;" title="Bấm để phóng to đối chứng">
-              <span class="dual-badge viol">🚨 CỘT 2: ẢNH VI PHẠM (XÁC NHẬN 2S)</span>
+              <span class="dual-badge viol">🚨 CỘT 2: ẢNH VI PHẠM (XÁC NHẬN ${dur ? dur + 'S' : 'ĐÃ ĐẠT'})</span>
               <img loading="lazy" src="${violSrc}" alt="Ảnh vi phạm #${escapeHtml(pid)}">
-              <span class="dual-col-caption">Phát hiện vi phạm liên tục ≥ 2s (có khung HUD) <span style="color: var(--accent);">🔍 Bấm phóng to</span></span>
+              <span class="dual-col-caption">Phát hiện vi phạm liên tục (có khung HUD) <span style="color: var(--accent);">🔍 Bấm phóng to</span></span>
             </div>
           </div>
         </div>

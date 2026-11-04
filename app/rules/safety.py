@@ -16,6 +16,7 @@ from app.config import (
     PERSON_CONFIDENCE_THRESHOLD,
     PERSON_EDGE_MARGIN_PX,
     PERSON_MIN_VISIBLE_WIDTH_PX,
+    PERSON_PROFILE_ASPECT_RATIO_MIN,
     REQUIRED_PPE,
 )
 from app.detection.adapter import HELMET, PERSON, SAFETY_VEST
@@ -48,15 +49,20 @@ class PersonState:
     reason: str = ""  # lý do UNKNOWN (quá nhỏ / confidence thấp / bị cắt khung)
 
 
-def _judgeable(assoc, frame_w, active_classes=None):
-    """Mỗi luật PPE có xét được không — người bị cắt ở mép khung thì không kết luận phần đó.
-
+def _judgeable(assoc, frame_w, frame_h=None, active_classes=None):
+    """Mỗi luật PPE có xét được không:
+    - Người bị cắt ở mép khung thì không kết luận phần đó.
     - Mũ nằm ở ĐỈNH đầu: chạm mép trên là có thể đã che mất mũ -> không xét.
     - Áo nằm GIỮA thân: cắt vài px ở mép bên không che được áo; chỉ coi là che khi
       phần người thấy được hẹp (người gần như đã ra khỏi khung) -> không xét.
     - Cắt mép dưới (chân) không che mũ/áo nên vẫn xét bình thường.
+    - Người xoay ngang (profile view W/H < PERSON_PROFILE_ASPECT_RATIO_MIN) và không thấy áo:
+      chưa đủ góc quan sát tin cậy để khẳng định vi phạm áo -> không xét được.
     """
-    x1, y1, x2, _ = assoc.person_bbox
+    x1, y1, x2, y2 = assoc.person_bbox
+    w = x2 - x1
+    h = max(1, y2 - y1)
+    aspect_ratio = w / h
     m = PERSON_EDGE_MARGIN_PX
     classes = active_classes if active_classes is not None else REQUIRED_PPE
     out = {}
@@ -64,8 +70,10 @@ def _judgeable(assoc, frame_w, active_classes=None):
         if cls == HELMET:
             out[cls] = y1 > m
         elif cls == SAFETY_VEST:
-            cut_side = x1 <= m or x2 >= frame_w - m
-            out[cls] = not (cut_side and (x2 - x1) < PERSON_MIN_VISIBLE_WIDTH_PX)
+            cut_side = (x1 <= m or x2 >= frame_w - m) and (w < PERSON_MIN_VISIBLE_WIDTH_PX)
+            # Profile view filter: người xoay ngang (dáng hẹp) và không thấy áo -> không xét được áo
+            is_profile = (aspect_ratio < PERSON_PROFILE_ASPECT_RATIO_MIN) and (assoc.vest_track_id is None)
+            out[cls] = (not cut_side) and (not is_profile)
         else:
             out[cls] = True
     return out
@@ -116,7 +124,7 @@ def evaluate(
                                       reason="VI-04 không ghép được PPE"))
             continue
 
-        judgeable = _judgeable(a, frame_w, active_required)
+        judgeable = _judgeable(a, frame_w, frame_h, active_required)
         violations = []
         unjudgeable = []
         for cls in active_required:
@@ -133,5 +141,5 @@ def evaluate(
             states.append(PersonState(a.person_track_id, COMPLIANT))
         else:
             states.append(PersonState(a.person_track_id, UNKNOWN,
-                                      reason="bị cắt khung — không xét được: " + ", ".join(unjudgeable)))
+                                      reason="bị cắt khung hoặc xoay ngang — không xét được: " + ", ".join(unjudgeable)))
     return states

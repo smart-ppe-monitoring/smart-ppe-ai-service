@@ -93,11 +93,11 @@ def run_tests():
     check("chạm mép vài px, thân còn rộng + có áo -> COMPLIANT", s.status == COMPLIANT)
 
     # 9. Cắt mép dưới (chân, y2 = khung) không che mũ/áo -> vẫn xét bình thường
-    s = state(D("person", 100, 100, 200, 1000), HM, VT)
+    s = state(D("person", 100, 100, 400, 1000), HM, VT)
     check("cắt mép dưới vẫn xét -> COMPLIANT", s.status == COMPLIANT)
 
     # 10. Mép dưới cắt + thiếu áo -> CANDIDATE (không bị bỏ sót)
-    s = state(D("person", 100, 100, 200, 1000), HM, None)
+    s = state(D("person", 100, 100, 400, 1000), HM, None)
     check("cắt mép dưới + thiếu áo -> CANDIDATE", s.status == VIOLATION_CANDIDATE)
 
     # 11. ASSOC UNKNOWN (người nhỏ theo VI-04) -> UNKNOWN
@@ -119,6 +119,32 @@ def run_tests():
     asso_no_ppe = [PersonPPE(P.track_id, P.bbox, helmet_track_id=None, vest_track_id=None)]
     r_no_ppe = evaluate([P], asso_no_ppe, 1000, 1000, enable_no_helmet=False, enable_no_vest=False)
     check("tắt cả mũ và áo -> COMPLIANT", r_no_ppe[0].status == COMPLIANT)
+
+    # 15. Profile view (xoay ngang W/H = 90/500 = 0.18 < 0.24) + thiếu áo -> UNKNOWN
+    P_profile = D("person", 100, 100, 190, 600)
+    HM_profile = D("helmet", 110, 110, 180, 150, tid=2)
+    s_profile_novest = state(P_profile, HM_profile, None)
+    check("profile view (W/H=0.18) + thiếu áo -> UNKNOWN (không phạt oan)",
+          s_profile_novest.status == UNKNOWN and "safety_vest" in s_profile_novest.reason)
+
+    # 16. Profile view (xoay ngang W/H = 0.18) + CÓ ÁO -> COMPLIANT
+    VT_profile = D("safety_vest", 110, 200, 180, 450, tid=3)
+    s_profile_vest = state(P_profile, HM_profile, VT_profile)
+    check("profile view (W/H=0.18) + có áo -> COMPLIANT", s_profile_vest.status == COMPLIANT)
+
+    # 17. Normal view (W/H = 175/500 = 0.35 >= 0.24) + thiếu áo -> CANDIDATE
+    P_normal = D("person", 100, 100, 275, 600)
+    HM_normal = D("helmet", 110, 110, 190, 150, tid=2)
+    s_normal_novest = state(P_normal, HM_normal, None)
+    check("normal view (W/H=0.35) + thiếu áo -> CANDIDATE",
+          s_normal_novest.status == VIOLATION_CANDIDATE and s_normal_novest.violations == [VIOLATION_NO_VEST])
+
+    # 18. Profile view sát mép đáy (y2=1000 frame_h=1000) + thiếu áo -> vẫn UNKNOWN (nhất quán biên)
+    P_bottom_profile = D("person", 100, 500, 190, 1000)  # W=90, H=500 -> W/H = 0.18 < 0.24
+    HM_bottom_profile = D("helmet", 110, 510, 180, 550, tid=2)
+    s_bottom_profile = state(P_bottom_profile, HM_bottom_profile, None)
+    check("profile view sát mép đáy (cut_bottom) + thiếu áo -> vẫn UNKNOWN",
+          s_bottom_profile.status == UNKNOWN and "safety_vest" in s_bottom_profile.reason)
 
     return failed
 

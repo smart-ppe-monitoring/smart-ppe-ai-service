@@ -158,6 +158,49 @@ def run_tests():
         c.update(2.0, [PersonState(i, COMPLIANT) for i in range(1, tid + 1)], frame=dummy_frame)
     check("SEC-26: số lượng compliant_frames không vượt quá max_compliant_frames", len(c._compliant_frames) <= 3)
 
+    # 12. Differentiated confirmation duration (Helmet 2.0s vs Vest 4.0s)
+    c_diff = ViolationConfirmation()
+    evs_helmet = []
+    evs_vest = []
+    # Feed helmet candidate at t=0, 1, 2 -> should confirm at t=2.0
+    for t in [0.0, 1.0, 2.0]:
+        evs_helmet += feed(c_diff, t, cand(1, VIOLATION_NO_HELMET))
+    check("mũ bảo hộ xác nhận tại 2.0s", len(evs_helmet) == 1 and evs_helmet[0].confirmed_t == 2.0)
+
+    # Feed vest candidate at t=0, 1, 2 -> should NOT confirm yet at t=2.0
+    c_vest = ViolationConfirmation()
+    for t in [0.0, 1.0, 2.0]:
+        evs_vest += feed(c_vest, t, cand(2, VIOLATION_NO_VEST))
+    check("áo phản quang chưa xác nhận tại 2.0s (ngưỡng 4.0s)", len(evs_vest) == 0)
+
+    # Feed vest up to t=3, 4 -> confirms at t=4.0
+    for t in [3.0, 4.0]:
+        evs_vest += feed(c_vest, t, cand(2, VIOLATION_NO_VEST))
+    check("áo phản quang xác nhận tại 4.0s", len(evs_vest) == 1 and evs_vest[0].confirmed_t == 4.0)
+
+    # 13. UNKNOWN (xoay ngang) tạm dừng streak áo mà không làm tăng streak
+    c_pause = ViolationConfirmation()
+    # t=0, 1 -> candidate áo (acc = 1.0s)
+    feed(c_pause, 0.0, cand(3, VIOLATION_NO_VEST))
+    feed(c_pause, 1.0, cand(3, VIOLATION_NO_VEST))
+    # t=2, 3 -> UNKNOWN do xoay ngang
+    feed(c_pause, 2.0, [PersonState(3, UNKNOWN, reason="xoay ngang")])
+    feed(c_pause, 3.0, [PersonState(3, UNKNOWN, reason="xoay ngang")])
+    # t=4 -> candidate áo lại (acc = 2.0s, chưa đủ 4.0s)
+    evs_pause = feed(c_pause, 4.0, cand(3, VIOLATION_NO_VEST))
+    check("UNKNOWN tạm dừng tích lũy streak áo (chưa kích hoạt vi phạm ở t=4)", len(evs_pause) == 0)
+
+    # 14. COMPLIANT grace period trì hoãn khởi động streak vi phạm
+    c_grace = ViolationConfirmation(duration_s=2.0, grace_period_s=1.0)
+    # t=0.0: COMPLIANT
+    feed(c_grace, 0.0, [PersonState(4, COMPLIANT)])
+    # t=0.5: CANDIDATE nhưng chưa qua grace period 1.0s (0.5 - 0.0 = 0.5 < 1.0) -> streak chưa tạo
+    feed(c_grace, 0.5, cand(4, VIOLATION_NO_HELMET))
+    check("trong grace period (dt=0.5 < 1.0s) -> chưa tạo streak", (4, VIOLATION_NO_HELMET) not in c_grace._streaks)
+    # t=1.0: Đã đủ grace period (1.0 - 0.0 = 1.0 >= 1.0) -> bắt đầu streak tại t=1.0
+    feed(c_grace, 1.0, cand(4, VIOLATION_NO_HELMET))
+    check("sau grace period -> bắt đầu streak", (4, VIOLATION_NO_HELMET) in c_grace._streaks)
+
     return failed
 
 
