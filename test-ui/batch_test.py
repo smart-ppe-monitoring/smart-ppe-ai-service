@@ -7,6 +7,7 @@ Results are saved to test-ui/results/<video_id> with:
 - evidences/ (violation snapshots + reference snapshots)
 """
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -34,18 +35,12 @@ def run_batch():
     print(f"Results Dir: {server.RESULT_DIR}")
     print("-" * 60)
 
-    # Find all test videos
+    # Find all test videos in uploads (all formats, size > 10KB)
+    valid_exts = {".mp4", ".avi", ".mkv", ".mov"}
     video_files = sorted(
-        [f for f in server.UPLOAD_DIR.glob("video*.mp4")],
+        [f for f in server.UPLOAD_DIR.iterdir() if f.is_file() and f.suffix.lower() in valid_exts and f.stat().st_size > 10000],
         key=lambda p: p.stem
     )
-
-    if not video_files:
-        # Fallback to any mp4 in uploads
-        video_files = sorted(
-            [f for f in server.UPLOAD_DIR.glob("*.mp4") if f.stat().st_size > 10000],
-            key=lambda p: p.stem
-        )
 
     print(f"Found {len(video_files)} video(s) to process: {[f.name for f in video_files]}")
     print("-" * 60)
@@ -60,6 +55,32 @@ def run_batch():
 
         # Prepare directory and job state
         paths = server._job_paths(job_id)
+
+        # Check if already processed
+        meta_file = paths["meta"]
+        if meta_file.exists() and paths["video"].exists():
+            try:
+                existing_meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                if existing_meta.get("status") == "done" and "yolo11s_joint_phase3" in existing_meta.get("model", ""):
+                    ev_dir = paths["dir"] / "evidences"
+                    ev_count = len(list(ev_dir.glob("*.jpg"))) if ev_dir.exists() else 0
+                    mp4_size_mb = paths["video"].stat().st_size / (1024 * 1024)
+                    print(f"  -> ALREADY PROCESSED ({existing_meta.get('total_frames')} frames, {ev_count} evidences). Skipping.")
+                    summary.append({
+                        "job_id": job_id,
+                        "source": video_path.name,
+                        "frames": existing_meta.get("total_frames", 0),
+                        "fps": round(existing_meta.get("fps", 0), 1),
+                        "size": existing_meta.get("size", [0, 0]),
+                        "evidences": ev_count,
+                        "video_mb": round(mp4_size_mb, 1),
+                        "elapsed_s": 0.0,
+                        "status": "OK (cached)"
+                    })
+                    continue
+            except Exception:
+                pass
+
         paths["dir"].mkdir(parents=True, exist_ok=True)
         with server.JOBS_LOCK:
             server.JOBS[job_id] = {
