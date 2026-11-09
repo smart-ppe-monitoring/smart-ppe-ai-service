@@ -1,4 +1,11 @@
 import asyncio
+import sys
+from pathlib import Path
+
+# Đảm bảo thư mục gốc dự án luôn nằm trong sys.path khi chạy trực tiếp
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 """Test UI — FastAPI server phục vụ giao diện test 2 khung.
 
 Giao diện này TÁCH BIỆT với core pipeline: chỉ dùng lại các API công khai
@@ -16,6 +23,7 @@ import shutil
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 import time
 import uuid
 from pathlib import Path
@@ -29,12 +37,14 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from app import config
 from app.live_engine import (
     MAX_ROI_POINTS,
     MAX_ROI_POLYGONS,
     LiveSessionLimitError,
     LiveStreamSession,
     live_engine_manager,
+    preload_detector,
 )
 from app.video.video_reader import VideoReader, VideoSourceError, is_youtube_url
 from app.detection.detector import Detector, DetectorError
@@ -56,14 +66,20 @@ RESULT_DIR.mkdir(exist_ok=True)
 
 VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
 
-app = FastAPI(title="Video Intelligence — Test UI")
-logger = logging.getLogger("test_ui_server")
-
-# Chống DNS rebinding: chỉ chấp nhận Host header của loopback (cấu hình qua TEST_UI_ALLOWED_HOSTS).
-TEST_UI_ALLOWED_HOSTS = [
-    h.strip() for h in os.getenv("TEST_UI_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if h.strip()
+TAGS_METADATA = [
+    {
+        "name": "Live Stream AI Engine",
+        "description": "Quét trực tiếp video thời gian thực từ Webcam, MP4, RTSP, YouTube. Hỗ trợ điều phối FPS mượt mà, suy luận AI bất đồng bộ, phát hiện vùng cấm Polygon ROI, Scene Cut, và trích xuất bằng chứng Before/After.",
+    },
+    {
+        "name": "Offline Video Processing",
+        "description": "Tải lên file video, chạy toàn bộ tiến trình nhận diện AI offline, lưu log JSONL và xuất video H.264.",
+    },
+    {
+        "name": "Model Management",
+        "description": "Quản lý và liệt kê các mô hình trọng số YOLO (.pt, .onnx) khả dụng trong hệ thống.",
+    },
 ]
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=TEST_UI_ALLOWED_HOSTS)
 
 JOBS = {}
 JOBS_LOCK = threading.Lock()
@@ -71,6 +87,43 @@ JOBS_LOCK = threading.Lock()
 # Bounded thread pool for video processing (max 2 concurrent jobs to prevent DoS)
 MAX_CONCURRENT_JOBS = 2
 JOB_EXECUTOR = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_JOBS, thread_name_prefix="video-worker")
+
+# Chống DNS rebinding: chỉ chấp nhận Host header của loopback (cấu hình qua TEST_UI_ALLOWED_HOSTS).
+TEST_UI_ALLOWED_HOSTS = [
+    h.strip() for h in os.getenv("TEST_UI_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if h.strip()
+]
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Quản lý vòng đời server: làm nóng trước YOLO model khi khởi động và dọn dẹp khi tắt."""
+    if not os.getenv("PYTEST_CURRENT_TEST"):
+        rec_model = MODELS_DIR / "yolo11s_joint_phase3.pt"
+        target = str(rec_model) if rec_model.exists() else config.YOLO_MODEL_PATH
+        threading.Thread(target=preload_detector, args=(target,), daemon=True, name="model-prewarm").start()
+    yield
+    live_engine_manager.stop_all()
+    JOB_EXECUTOR.shutdown(wait=False)
+
+
+app = FastAPI(
+    title="Smart PPE Monitoring — AI Vision & Live Engine API",
+    description=(
+        "Hệ thống thị giác máy tính giám sát an toàn lao động (PPE) và xâm nhập vùng nguy hiểm.\n\n"
+        "### Các tính năng chính:\n"
+        "- **📡 Quét trực tiếp (Live Stream AI)**: Hỗ trợ webcam, YouTube, file MP4, và RTSP với tốc độ hiển thị 25 FPS không độ trễ.\n"
+        "- **🚨 Phát hiện vi phạm an toàn**: Kiểm tra Không đội mũ (`NO_HELMET`), Không mặc áo (`NO_VEST`), và Xâm nhập vùng nguy hiểm (`RESTRICTED_AREA`).\n"
+        "- **📸 Bằng chứng đối chứng Before / After**: Tự động chụp và lưu cặp ảnh đối chứng hợp lệ và ảnh vi phạm kèm khoanh vùng HUD.\n"
+        "- **⚙️ Điều chỉnh nóng (Hot-update)**: Cho phép bật/tắt luật, đổi target FPS, AI FPS, Scene Cut ngay khi video đang chạy.\n"
+    ),
+    version="2.1.0",
+    openapi_tags=TAGS_METADATA,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    lifespan=lifespan,
+)
+logger = logging.getLogger("test_ui_server")
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=TEST_UI_ALLOWED_HOSTS)
 
 JOB_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
@@ -356,7 +409,7 @@ def _is_valid_video_magic(header: bytes) -> bool:
     return False
 
 
-@app.post("/api/upload")
+@app.post("/api/upload", tags=["Offline Video Processing"], summary="Tải video lên máy chủ")
 async def upload(file: UploadFile = File(...)):
     suffix = Path(file.filename or "video.mp4").suffix.lower()
     if suffix not in VIDEO_EXT:
@@ -395,7 +448,7 @@ async def upload(file: UploadFile = File(...)):
     return {"job_id": job_id}
 
 
-@app.post("/api/jobs/{job_id}/start")
+@app.post("/api/jobs/{job_id}/start", tags=["Offline Video Processing"], summary="Khởi chạy tiến trình nhận diện AI offline")
 def start(job_id: str, model: str = None):
     if not re.match(r"^[a-zA-Z0-9_-]+$", job_id):
         raise HTTPException(400, "Mã job không hợp lệ")
@@ -419,12 +472,12 @@ def start(job_id: str, model: str = None):
     return {"status": "processing"}
 
 
-@app.get("/api/jobs/{job_id}/status")
+@app.get("/api/jobs/{job_id}/status", tags=["Offline Video Processing"], summary="Xem trạng thái & tiến độ job offline")
 def status(job_id: str):
     return _get_job(job_id)
 
 
-@app.get("/api/jobs/{job_id}/log")
+@app.get("/api/jobs/{job_id}/log", tags=["Offline Video Processing"], summary="Tải nhật ký kết quả nhận diện JSONL")
 def get_log(job_id: str):
     p = _job_paths(job_id)["log"]
     if not p.exists():
@@ -432,7 +485,7 @@ def get_log(job_id: str):
     return FileResponse(p, media_type="application/x-ndjson")
 
 
-@app.get("/api/jobs/{job_id}/video")
+@app.get("/api/jobs/{job_id}/video", tags=["Offline Video Processing"], summary="Xem video kết quả đã vẽ nhãn (H.264 MP4)")
 def get_video(job_id: str):
     p = _job_paths(job_id)["video"]
     if not p.exists():
@@ -443,7 +496,7 @@ def get_video(job_id: str):
 EVIDENCE_FILE_RE = re.compile(r"^[0-9a-f]{12}(?:_ref)?\.jpg$")  # event_id hoặc event_id_ref
 
 
-@app.get("/api/jobs/{job_id}/evidence/{filename}")
+@app.get("/api/jobs/{job_id}/evidence/{filename}", tags=["Offline Video Processing"], summary="Lấy ảnh bằng chứng vi phạm offline")
 def get_evidence(job_id: str, filename: str):
     if not EVIDENCE_FILE_RE.match(filename):
         raise HTTPException(400, "Tên file không hợp lệ")
@@ -453,7 +506,7 @@ def get_evidence(job_id: str, filename: str):
     return FileResponse(p, media_type="image/jpeg")
 
 
-@app.get("/api/jobs/{job_id}/meta")
+@app.get("/api/jobs/{job_id}/meta", tags=["Offline Video Processing"], summary="Lấy thông tin cấu hình và thống kê job")
 def get_meta(job_id: str):
     p = _job_paths(job_id)["meta"]
     if not p.exists():
@@ -476,7 +529,7 @@ def _scan_jobs_from_disk() -> list[dict]:
     return jobs
 
 
-@app.get("/api/jobs")
+@app.get("/api/jobs", tags=["Offline Video Processing"], summary="Liệt kê danh sách video offline đã xử lý")
 async def list_jobs():
     """SEC-14: Offload blocking filesystem disk traversal and JSON parsing to worker thread."""
     return await asyncio.to_thread(_scan_jobs_from_disk)
@@ -498,10 +551,30 @@ def _scan_models_from_disk() -> list[dict]:
     return available
 
 
-@app.get("/api/models")
+@app.get("/api/models", tags=["Model Management"], summary="Liệt kê các mô hình YOLO (.pt) khả dụng")
 async def list_models():
     """SEC-14: Offload model weight file scanning to worker thread."""
     return await asyncio.to_thread(_scan_models_from_disk)
+
+
+def _scan_uploaded_videos() -> list[dict]:
+    """Quét các file video MP4/MKV hợp lệ trong thư mục uploads/ sẵn sàng để quét trực tiếp."""
+    videos = []
+    if UPLOAD_DIR.exists():
+        for p in sorted(UPLOAD_DIR.glob("*")):
+            if p.is_file() and p.suffix.lower() in VIDEO_EXT and p.stat().st_size > 10000:
+                videos.append({
+                    "filename": p.name,
+                    "stem": p.stem,
+                    "size_mb": round(p.stat().st_size / (1024 * 1024), 2),
+                })
+    return videos
+
+
+@app.get("/api/live/videos", tags=["Live Stream AI Engine"], summary="Danh sách video trong uploads/ sẵn sàng phát trực tiếp")
+async def list_live_videos():
+    """Liệt kê các video MP4/MKV trong uploads/ sẵn sàng để phát trực tiếp qua Live Engine."""
+    return await asyncio.to_thread(_scan_uploaded_videos)
 
 
 # ─── Live Stream AI Engine Endpoints (D08.pdf Mục 3.3, 2.6 & 6.3) ───────────────
@@ -539,6 +612,7 @@ class LiveStartRequest(BaseModel):
     enable_no_helmet: bool = True
     enable_no_vest: bool = True
     enable_restricted_area: bool = True
+    enable_scene_cut: bool = True
 
 
 class LiveConfigUpdateRequest(BaseModel):
@@ -550,6 +624,7 @@ class LiveConfigUpdateRequest(BaseModel):
     enable_no_helmet: Optional[bool] = None
     enable_no_vest: Optional[bool] = None
     enable_restricted_area: Optional[bool] = None
+    enable_scene_cut: Optional[bool] = None
     confirmation_duration_s: Optional[ConfirmSeconds] = None
 
 
@@ -603,7 +678,7 @@ def _resolve_live_source(raw: str):
     )
 
 
-@app.post("/api/live/start")
+@app.post("/api/live/start", tags=["Live Stream AI Engine"], summary="Khởi chạy phiên quét trực tiếp (Live Stream AI)")
 def start_live(req: LiveStartRequest):
     """Khởi chạy phiên quét trực tiếp (Live Stream AI) cho camera."""
     source_val = _resolve_live_source(req.source)
@@ -627,6 +702,7 @@ def start_live(req: LiveStartRequest):
             enable_no_helmet=req.enable_no_helmet,
             enable_no_vest=req.enable_no_vest,
             enable_restricted_area=req.enable_restricted_area,
+            enable_scene_cut=req.enable_scene_cut,
             dispatch_enabled=LIVE_DISPATCH_ENABLED,
         )
     except LiveSessionLimitError as e:
@@ -641,7 +717,7 @@ def start_live(req: LiveStartRequest):
     }
 
 
-@app.get("/api/live/{camera_id}/stream")
+@app.get("/api/live/{camera_id}/stream", tags=["Live Stream AI Engine"], summary="Phát luồng MJPEG trực tiếp (quét tới đâu phát tới đó)")
 def get_live_stream(camera_id: str):
     """Phát luồng MJPEG trực tiếp (quét tới đâu phát tới đó) qua multipart/x-mixed-replace."""
     session = live_engine_manager.get_session(camera_id)
@@ -653,7 +729,7 @@ def get_live_stream(camera_id: str):
     )
 
 
-@app.get("/api/live/{camera_id}/stats")
+@app.get("/api/live/{camera_id}/stats", tags=["Live Stream AI Engine"], summary="Lấy số liệu thời gian thực (FPS, latency, vi phạm)")
 def get_live_stats(camera_id: str):
     """Lấy số liệu thời gian thực: FPS, Inference Latency, Alert Latency, phát hiện hiện tại."""
     session = live_engine_manager.get_session(camera_id)
@@ -668,7 +744,7 @@ def get_live_stats(camera_id: str):
     }
 
 
-@app.patch("/api/live/{camera_id}/config")
+@app.patch("/api/live/{camera_id}/config", tags=["Live Stream AI Engine"], summary="Điều chỉnh cấu hình nóng (hot-update) khi đang chạy")
 def update_live_config(camera_id: str, req: LiveConfigUpdateRequest):
     """Điều chỉnh nóng (hot-update) FPS, Sampling rate hoặc ROI ngay khi video đang chạy."""
     session = live_engine_manager.get_session(camera_id)
@@ -681,6 +757,7 @@ def update_live_config(camera_id: str, req: LiveConfigUpdateRequest):
         enable_no_helmet=req.enable_no_helmet,
         enable_no_vest=req.enable_no_vest,
         enable_restricted_area=req.enable_restricted_area,
+        enable_scene_cut=req.enable_scene_cut,
         confirmation_duration_s=req.confirmation_duration_s,
     )
     return {
@@ -691,7 +768,7 @@ def update_live_config(camera_id: str, req: LiveConfigUpdateRequest):
     }
 
 
-@app.post("/api/live/{camera_id}/stop")
+@app.post("/api/live/{camera_id}/stop", tags=["Live Stream AI Engine"], summary="Dừng phiên phát trực tiếp của camera")
 def stop_live_camera(camera_id: str):
     """Dừng phiên live của camera."""
     stopped = live_engine_manager.stop_session(camera_id)
@@ -700,16 +777,22 @@ def stop_live_camera(camera_id: str):
     return {"status": "stopped", "camera_id": camera_id}
 
 
-@app.get("/api/live/sessions")
+@app.get("/api/live/sessions", tags=["Live Stream AI Engine"], summary="Liệt kê danh sách các camera đang phát trực tiếp")
 def list_live_sessions():
     """Liệt kê toàn bộ các camera đang chạy phiên live stream."""
     return live_engine_manager.list_sessions()
 
 
-@app.on_event("shutdown")
-def shutdown_event():
-    live_engine_manager.stop_all()
-    JOB_EXECUTOR.shutdown(wait=False)
+@app.get("/api/live/evidence/{filename}", tags=["Live Stream AI Engine"], summary="Lấy ảnh bằng chứng vi phạm trực tiếp ({event_id}.jpg / _ref.jpg)")
+def get_live_evidence(filename: str):
+    """Phục vụ ảnh vi phạm ({event_id}.jpg) và ảnh đối chứng ({event_id}_ref.jpg) của luồng Live Stream."""
+    if not EVIDENCE_FILE_RE.match(filename):
+        raise HTTPException(400, "Tên file bằng chứng không hợp lệ")
+    ev_root = Path(config.EVIDENCE_DIR).resolve()
+    target = (ev_root / filename).resolve()
+    if not target.is_relative_to(ev_root) or not target.is_file():
+        raise HTTPException(404, "Không tìm thấy ảnh bằng chứng trực tiếp")
+    return FileResponse(target, media_type="image/jpeg")
 
 
 app.mount("/", StaticFiles(directory=BASE_DIR / "static", html=True), name="static")

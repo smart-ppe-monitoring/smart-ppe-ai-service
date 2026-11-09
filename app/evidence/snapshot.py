@@ -15,7 +15,11 @@ import cv2
 import numpy as np
 
 from app.detection.adapter import PERSON
-from app.constants import VIOLATION_NO_HELMET, VIOLATION_NO_VEST
+from app.constants import (
+    VIOLATION_NO_HELMET,
+    VIOLATION_NO_VEST,
+    VIOLATION_RESTRICTED_AREA,
+)
 
 OVERLAY_ALPHA = 0.35  # độ mờ của lớp đỏ phủ lên người vi phạm
 
@@ -23,8 +27,10 @@ OVERLAY_ALPHA = 0.35  # độ mờ của lớp đỏ phủ lên người vi ph�
 VIOLATION_LABELS = {
     "no_helmet": "VI PHAM: NO_HELMET",
     "no_safety_vest": "VI PHAM: NO_SAFETY_VEST",
+    "restricted_area": "VI PHAM: RESTRICTED_AREA",
     VIOLATION_NO_HELMET: "VI PHAM: NO_HELMET",
     VIOLATION_NO_VEST: "VI PHAM: NO_SAFETY_VEST",
+    VIOLATION_RESTRICTED_AREA: "VI PHAM: RESTRICTED_AREA",
 }
 
 

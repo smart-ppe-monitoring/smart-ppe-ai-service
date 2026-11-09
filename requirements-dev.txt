@@ -1,0 +1,7 @@
+# Development & Testing Dependencies for smart-ppe-ai-service
+-r requirements.txt
+
+# Test UI, Web Uploads & Media Processing Tools
+python-multipart>=0.0.9
+imageio-ffmpeg>=0.5.1
+

@@ -81,7 +81,14 @@ def _draw_hud_corners(img, bbox, color, length=15, thickness=2):
     cv2.line(img, (x2, y2), (x2, y2 - length), color, thickness)
 
 
-def draw_detections(frame, detections, person_states=None, roi_polygons=None):
+def draw_detections(
+    frame,
+    detections,
+    person_states=None,
+    roi_polygons=None,
+    enable_no_helmet: bool = True,
+    enable_no_vest: bool = True,
+):
     """Vẽ detections và trạng thái vi phạm lên frame.
 
     Args:
@@ -89,6 +96,8 @@ def draw_detections(frame, detections, person_states=None, roi_polygons=None):
         detections: Danh sách đối tượng Detection từ YOLO
         person_states: Danh sách PersonState từ evaluate_safety (tùy chọn)
         roi_polygons: Danh sách Polygon vùng hạn chế ROI (tùy chọn)
+        enable_no_helmet: Ẩn bbox mũ nếu tắt kiểm tra vi phạm mũ
+        enable_no_vest: Ẩn bbox áo nếu tắt kiểm tra vi phạm áo
     """
     if roi_polygons:
         draw_roi_polygons(frame, roi_polygons)
@@ -103,6 +112,12 @@ def draw_detections(frame, detections, person_states=None, roi_polygons=None):
     h, w = frame.shape[:2]
 
     for d in detections:
+        # Ẩn Bounding Box của loại bảo hộ đã tắt kiểm tra vi phạm
+        if d.class_name == HELMET and not enable_no_helmet:
+            continue
+        if d.class_name == SAFETY_VEST and not enable_no_vest:
+            continue
+
         raw_x1, raw_y1, raw_x2, raw_y2 = d.bbox
         x1 = max(0, min(w - 1, int(round(raw_x1))))
         y1 = max(0, min(h - 1, int(round(raw_y1))))

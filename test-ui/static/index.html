@@ -129,6 +129,29 @@
   .lightbox-col { display: flex; flex-direction: column; gap: 8px; align-items: center; justify-content: center; height: 100%; min-height: 0; }
   .lightbox-col img { max-width: 100%; max-height: calc(94vh - 120px); object-fit: contain; border-radius: 6px; border: 1px solid var(--border); background: #000; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
   .lightbox-caption { font-size: 12px; color: var(--dim); text-align: center; }
+
+  /* Live Stream Mode Styles */
+  .live-bar { background: #13171f; border-bottom: 1px solid var(--border); padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+  .live-input-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .live-input { flex: 1; min-width: 320px; background: #0d1117; color: #58a6ff; border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; font-size: 13.5px; font-family: inherit; }
+  .live-input:focus { outline: none; border-color: var(--accent); }
+  .quick-chips { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--dim); }
+  .chip-btn { background: #21262d; color: var(--dim); border: 1px solid var(--border); border-radius: 12px; padding: 3px 10px; font-size: 12px; cursor: pointer; transition: all 0.15s ease; }
+  .chip-btn:hover { background: #30363d; color: var(--accent); border-color: var(--accent); }
+  .btn-live-start { background: #238636; color: #fff; border: 1px solid rgba(240,246,252,0.1); border-radius: 6px; padding: 8px 18px; font-weight: 600; cursor: pointer; font-size: 13.5px; display: flex; align-items: center; gap: 6px; transition: background 0.15s ease; }
+  .btn-live-start:hover { background: #2ea043; }
+  .btn-live-stop { background: #da3633; color: #fff; border: 1px solid rgba(240,246,252,0.1); border-radius: 6px; padding: 8px 18px; font-weight: 600; cursor: pointer; font-size: 13.5px; display: flex; align-items: center; gap: 6px; transition: background 0.15s ease; }
+  .btn-live-stop:hover { background: #f85149; }
+  .badge-live-pulse { display: inline-flex; align-items: center; gap: 6px; background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid var(--red); padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold; letter-spacing: 0.5px; }
+  .pulse-dot { width: 8px; height: 8px; background: var(--red); border-radius: 50%; display: inline-block; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(1.3); } 100% { opacity: 1; transform: scale(1); } }
+  .metrics-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+  .tile { background: #0d1117; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; text-align: center; }
+  .tile-num { font-size: 18px; font-weight: bold; }
+  .tile-label { font-size: 11px; color: var(--dim); margin-top: 2px; }
+  .hot-config-box { background: #0d1117; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: 12px; margin-top: 10px; }
+  .hot-config-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .live-viol-item { background: #1c2128; border-left: 3px solid var(--red); padding: 6px 10px; margin-bottom: 6px; border-radius: 0 4px 4px 0; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -154,22 +177,183 @@
 
 <div class="nav-bar">
   <div class="nav-tabs">
-    <button id="tabPlayerBtn" class="nav-tab active" onclick="switchView('player')">
-      🎬 Video Player & Nhật Ký
+    <button id="tabLiveBtn" class="nav-tab active" onclick="switchView('live')">
+      📡 Quét Trực Tiếp (Live Stream AI)
+    </button>
+    <button id="tabPlayerBtn" class="nav-tab" onclick="switchView('player')">
+      🎬 Video Offline & Nhật Ký
     </button>
     <button id="tabGalleryBtn" class="nav-tab" onclick="switchView('gallery')">
       📸 Bảng Đối Chứng Vi Phạm <span id="galleryCountBadge" class="nav-badge">0</span>
     </button>
   </div>
   <div class="nav-tools">
+    <span id="liveStatusBadge" class="nav-badge" style="background: rgba(63, 185, 80, 0.15); color: var(--green); border-color: var(--green);">Sẵn sàng</span>
     <span id="jobInfoBadge" style="font-size: 12px; color: var(--dim);"></span>
+    <a href="/docs" target="_blank" class="btn-tool" style="text-decoration: none; color: #58a6ff; border-color: #58a6ff66; display: inline-flex; align-items: center; gap: 5px;" title="Mở tài liệu API Swagger UI">
+      📖 API Docs (Swagger)
+    </a>
     <button id="expandViewBtn" class="btn-tool" onclick="switchView('gallery')">
       ⛶ Mở rộng bảng đối chứng toàn màn hình
     </button>
   </div>
 </div>
 
-<div class="main" id="viewPlayer">
+<!-- VIEW 0: LIVE STREAM AI ENGINE (ZERO-DELAY SCANNING) -->
+<div id="viewLive" style="display: flex; flex-direction: column; flex: 1; min-height: 0;">
+  <!-- Live Control Toolbar -->
+  <div class="live-bar">
+    <div class="live-input-row">
+      <span style="font-weight: 600; font-size: 13.5px; color: var(--accent); white-space: nowrap;">🔗 Nguồn Live:</span>
+      <input type="text" id="liveSourceInput" class="live-input" placeholder="Dán link YouTube, tên file MP4 (vd: video2.mp4, night_1.mp4), RTSP hoặc 0 (webcam)..." value="https://youtu.be/2eSDObaU6To?si=5ptNkUrn6j8zVQWC">
+
+      <select id="liveVideoSelector" style="background: #161b22; color: #7ee04b; border: 1px solid #238636; border-radius: 6px; padding: 7px 10px; font-size: 13px; font-weight: 500;" onchange="onSelectLiveVideo(this.value)">
+        <option value="">📁 Chọn video MP4 offline (uploads/)...</option>
+      </select>
+
+      <input type="file" id="liveFileInput" accept="video/*" style="display:none;" onchange="onUploadAndStreamLive(event)">
+      <button class="btn-tool" style="font-size: 12.5px; padding: 7px 12px; color: #58a6ff; border-color: #58a6ff66; display: flex; align-items: center; gap: 5px;" onclick="$('liveFileInput').click()" title="Tải file MP4 từ máy lên để quét trực tiếp (không chờ xuất results)">
+        📤 Tải MP4 từ máy quét ngay
+      </button>
+
+      <select id="liveModelSelector" style="background: #161b22; color: #58a6ff; border: 1px solid #30363d; border-radius: 6px; padding: 7px 10px; font-size: 13px; font-weight: 500;">
+        <option value="models/yolo11s_joint_phase3.pt" selected>Model: yolo11s_joint_phase3 (19.2 MB - Khuyến nghị)</option>
+      </select>
+
+      <label style="font-size: 12.5px; color: var(--dim); display: flex; align-items: center; gap: 4px;">
+        Camera:
+        <input type="text" id="liveCameraId" value="CAM-01" style="width: 85px; background: #0d1117; color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px; font-size: 12px;">
+      </label>
+
+      <button id="btnStartLive" class="btn-live-start" onclick="startLiveStream()">
+        ▶ Bắt đầu Quét Trực Tiếp
+      </button>
+      <button id="btnStopLive" class="btn-live-stop" onclick="stopLiveStream()" style="display: none;">
+        ⏹ Dừng Quét
+      </button>
+    </div>
+
+    <div class="quick-chips">
+      <span>Gợi ý luồng thử nghiệm nhanh:</span>
+      <button class="chip-btn" onclick="fillLiveUrl('video2.mp4')">📁 MP4: video2.mp4 (Offline)</button>
+      <button class="chip-btn" onclick="fillLiveUrl('night_1.mp4')">📁 MP4: night_1.mp4 (Ban đêm)</button>
+      <button class="chip-btn" onclick="fillLiveUrl('tiktok_1.mp4')">📁 MP4: tiktok_1.mp4</button>
+      <button class="chip-btn" onclick="fillLiveUrl('https://youtu.be/2eSDObaU6To?si=5ptNkUrn6j8zVQWC')">🎬 YouTube 2 (Có người vi phạm)</button>
+      <button class="chip-btn" onclick="fillLiveUrl('https://youtu.be/z-Oq-TtT7fk?si=u-6Fuoj7AWu16BZ9')">🎬 YouTube 1 (Công trường)</button>
+      <button class="chip-btn" onclick="fillLiveUrl('0')">📹 Webcam máy tính (0)</button>
+      <span style="margin-left: auto; font-size: 12px; color: var(--dim);">
+        Target FPS: <input type="number" id="liveTargetFps" value="25" min="1" max="60" style="width: 48px; background: #0d1117; color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 4px; text-align: center;"> |
+        AI Sampling: <input type="number" id="liveAiFps" value="15" min="1" max="30" style="width: 48px; background: #0d1117; color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 4px; text-align: center;"> fps
+      </span>
+    </div>
+  </div>
+
+  <!-- Live 2-Pane Main View -->
+  <div class="main" style="padding: 12px; flex: 1; min-height: 0;">
+    <!-- Khung trái: Màn hình MJPEG luồng AI -->
+    <div class="pane" style="overflow-y: auto;">
+      <div id="liveStreamInfo" style="padding: 8px 12px; font-size: 13px; color: var(--dim); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+        <div><b>Màn hình Stream:</b> <span id="liveSourceDisplay">Chưa kết nối</span></div>
+        <div id="liveIndicator"></div>
+      </div>
+
+      <div style="position: relative; background: #000; min-height: 380px; display: flex; align-items: center; justify-content: center;">
+        <img id="liveStreamImg" src="" style="width: 100%; max-height: 52vh; object-fit: contain; display: none;">
+
+        <div id="livePlaceholder" style="padding: 32px 24px; text-align: center; color: var(--dim); max-width: 580px;">
+          <div style="font-size: 44px; margin-bottom: 12px;">📡</div>
+          <h3 style="color: var(--text); font-size: 17px; margin-top: 0;">Chế độ Quét Trực Tiếp (Live Stream AI)</h3>
+          <p style="font-size: 13px; line-height: 1.6; margin-bottom: 18px;">
+            Nhận diện video trực tiếp theo thời gian thực (quét tới đâu phát tới đó - <b>Zero Delay</b>).
+            Không cần chờ upload toàn bộ file hay xuất video ra thư mục <code>results/</code>!
+          </p>
+          <div style="display: flex; gap: 10px; justify-content: center;">
+            <button class="btn-live-start" onclick="startLiveStream()">▶ Bắt đầu quét ngay</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Điều chỉnh cấu hình nóng (Hot-update) -->
+      <div class="hot-config-box" style="margin: 12px;">
+        <div style="font-weight: 600; color: var(--accent); margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+          <span>⚙️ ĐIỀU CHỈNH THÔNG SỐ NÓNG (ÁP DỤNG TRỰC TIẾP KHI VIDEO ĐANG CHẠY)</span>
+          <button class="btn-tool" style="font-size: 11px; padding: 2px 8px;" onclick="applyHotConfig()">Lưu cấu hình</button>
+        </div>
+        <div class="hot-config-row">
+          <label style="cursor: pointer;"><input type="checkbox" id="chkHelmet" checked> Bắt lỗi Không đội mũ (NO_HELMET)</label>
+          <label style="cursor: pointer;"><input type="checkbox" id="chkVest" checked> Bắt lỗi Không mặc áo (NO_VEST)</label>
+          <label style="cursor: pointer;"><input type="checkbox" id="chkRestricted" checked> Bắt lỗi Xâm nhập vùng cấm (ROI Foot-Point)</label>
+          <label style="cursor: pointer;"><input type="checkbox" id="chkSceneCut" checked> Tự động phát hiện chuyển cảnh (Scene Cut)</label>
+        </div>
+      </div>
+
+      <!-- KHU VỰC ĐỐI CHỨNG 2 CỘT ẢNH (BEFORE vs AFTER) TRỰC TIẾP DƯỚI LUỒNG LIVE -->
+      <div id="liveDualEvidenceSection" style="display: none; border-top: 1px solid var(--border); padding: 14px; background: #13171f;">
+        <div class="dual-evidence-title">
+          <span>📸 ĐỐI CHỨNG BẰNG CHỨNG VI PHẠM TRỰC TIẾP (BEFORE vs AFTER)</span>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span id="liveDualEvidenceCount" style="font-size: 11px; color: var(--dim)"></span>
+            <button class="btn-tool" style="font-size: 11px; padding: 3px 8px;" onclick="switchView('gallery')">
+              ⛶ Phóng to toàn màn hình
+            </button>
+          </div>
+        </div>
+        <div id="liveDualEvidenceContainer"></div>
+      </div>
+    </div>
+
+    <!-- Khung phải: Thống kê & Bảng vi phạm trực tiếp -->
+    <div class="pane" style="font-family: 'SF Mono', Menlo, monospace; font-size: 12.5px; overflow-y: auto; padding: 12px;">
+      <!-- Realtime Metrics -->
+      <div class="card">
+        <h2>📊 THỐNG KÊ THỜI GIAN THỰC (REALTIME METRICS)</h2>
+        <div class="body">
+          <div class="metrics-tiles">
+            <div class="tile">
+              <div class="tile-num" id="metricFps" style="color: var(--green);">0.0</div>
+              <div class="tile-label">FPS Hiển thị</div>
+            </div>
+            <div class="tile">
+              <div class="tile-num" id="metricInfer" style="color: var(--accent);">0 ms</div>
+              <div class="tile-label">Độ trễ AI Infer</div>
+            </div>
+            <div class="tile">
+              <div class="tile-num" id="metricPersons" style="color: #ff8a5c;">0</div>
+              <div class="tile-label">Người (Person)</div>
+            </div>
+            <div class="tile">
+              <div class="tile-num" id="metricViols" style="color: var(--red);">0</div>
+              <div class="tile-label">Vi phạm trực tiếp</div>
+            </div>
+          </div>
+          <div style="font-size: 12px; color: var(--dim); display: flex; justify-content: space-between; border-top: 1px solid #21262d; padding-top: 6px;">
+            <span>🪖 Mũ bảo hộ: <b id="metricHelmets" style="color: #7ee04b;">0</b></span>
+            <span>🦺 Áo phản quang: <b id="metricVests" style="color: #4bb0ff;">0</b></span>
+            <span>⏱ Rule Latency: <b id="metricRule">0 ms</b></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Violations Feed -->
+      <div class="card confirm">
+        <h2>🚨 NHẬT KÝ VI PHẠM TRỰC TIẾP (LIVE EVENT FEED)</h2>
+        <div class="body" id="liveViolationsBox" style="max-height: 320px; overflow-y: auto;">
+          <span style="color: var(--dim)">Đang chờ phát hiện vi phạm từ luồng trực tiếp...</span>
+        </div>
+      </div>
+
+      <!-- Sessions List -->
+      <div class="card">
+        <h2>📹 DANH SÁCH CAMERA ĐANG HOẠT ĐỘNG</h2>
+        <div class="body" id="liveSessionsList">
+          <span style="color: var(--dim)">Đang tải danh sách camera...</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="main" id="viewPlayer" style="display: none;">
   <div class="pane" id="videoPane" style="overflow-y: auto;">
     <div id="videoInfo">Chưa có video — upload một video để xem kết quả detect + tracking.</div>
     <video id="video" controls></video>
@@ -393,7 +577,14 @@ async function loadResult() {
   video.load();
 }
 
-const VT_LABEL = { no_helmet: "không đội mũ bảo hộ", no_safety_vest: "không mặc áo phản quang" };
+const VT_LABEL = {
+  no_helmet: "không đội mũ bảo hộ",
+  no_safety_vest: "không mặc áo phản quang",
+  restricted_area: "xâm nhập vùng cấm (ROI)",
+  NO_HELMET: "không đội mũ bảo hộ",
+  NO_VEST: "không mặc áo phản quang",
+  RESTRICTED_AREA: "xâm nhập vùng cấm (ROI)",
+};
 
 function renderViolations() {
   const items = state.violations.map(v => {
@@ -415,31 +606,500 @@ function renderViolations() {
 }
 
 // ---------- bằng chứng vi phạm (VI-08) & Đối chứng kép ----------
-let currentView = 'player';
+let currentView = 'live';
 let currentSavedEvs = [];
 let currentEvidenceFilter = 'ALL';
 let currentLightboxIdx = 0;
 
 function switchView(view) {
   currentView = view;
+  const viewLive = $("viewLive");
   const viewPlayer = $("viewPlayer");
   const viewGallery = $("viewGallery");
+  const tabLiveBtn = $("tabLiveBtn");
   const tabPlayerBtn = $("tabPlayerBtn");
   const tabGalleryBtn = $("tabGalleryBtn");
 
-  if (view === 'gallery') {
+  if (view === 'live') {
+    if (viewLive) viewLive.style.display = 'flex';
+    if (viewPlayer) viewPlayer.style.display = 'none';
+    if (viewGallery) viewGallery.style.display = 'none';
+    if (tabLiveBtn) tabLiveBtn.classList.add('active');
+    if (tabPlayerBtn) tabPlayerBtn.classList.remove('active');
+    if (tabGalleryBtn) tabGalleryBtn.classList.remove('active');
+    loadActiveSessions();
+  } else if (view === 'gallery') {
+    if (viewLive) viewLive.style.display = 'none';
     if (viewPlayer) viewPlayer.style.display = 'none';
     if (viewGallery) viewGallery.style.display = 'block';
+    if (tabLiveBtn) tabLiveBtn.classList.remove('active');
     if (tabPlayerBtn) tabPlayerBtn.classList.remove('active');
     if (tabGalleryBtn) tabGalleryBtn.classList.add('active');
     renderGallery();
   } else {
+    if (viewLive) viewLive.style.display = 'none';
     if (viewPlayer) viewPlayer.style.display = 'grid';
     if (viewGallery) viewGallery.style.display = 'none';
+    if (tabLiveBtn) tabLiveBtn.classList.remove('active');
     if (tabPlayerBtn) tabPlayerBtn.classList.add('active');
     if (tabGalleryBtn) tabGalleryBtn.classList.remove('active');
   }
 }
+
+// ─── LIVE STREAM AI ENGINE (ZERO DELAY) ──────────────────────────────────
+let activeLiveCameraId = null;
+let liveStatsInterval = null;
+
+function fillLiveUrl(url) {
+  const inp = $("liveSourceInput");
+  if (inp) {
+    inp.value = url;
+    inp.focus();
+  }
+}
+
+function onSelectLiveVideo(val) {
+  if (!val) return;
+  $("liveSourceInput").value = val;
+  startLiveStream();
+}
+
+async function onUploadAndStreamLive(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const badge = $("liveStatusBadge");
+  if (badge) {
+    badge.className = "nav-badge";
+    badge.style.background = "rgba(210, 153, 34, 0.2)";
+    badge.style.color = "var(--yellow)";
+    badge.style.borderColor = "var(--yellow)";
+    badge.textContent = `Đang tải lên ${file.name}...`;
+  }
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const res = await fetch("/api/upload", { method: "POST", body: fd });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || res.statusText);
+    }
+    const data = await res.json();
+    $("liveSourceInput").value = data.job_id;
+    await loadLiveVideos();
+    await startLiveStream();
+  } catch (err) {
+    alert("Lỗi tải video lên: " + err.message);
+    if (badge) {
+      badge.textContent = "Sẵn sàng";
+      badge.style.color = "var(--green)";
+      badge.style.borderColor = "var(--green)";
+    }
+  } finally {
+    e.target.value = "";
+  }
+}
+
+async function loadLiveVideos() {
+  try {
+    const res = await fetch("/api/live/videos");
+    if (!res.ok) return;
+    const videos = await res.json();
+    const sel = $("liveVideoSelector");
+    if (!sel) return;
+    sel.innerHTML = '<option value="">📁 Chọn video MP4 offline (uploads/)...</option>' +
+      videos.map(v => `<option value="${escapeHtml(v.filename)}">${escapeHtml(v.filename)} (${v.size_mb} MB)</option>`).join("");
+  } catch (e) {
+    console.error("Lỗi tải danh sách video offline:", e);
+  }
+}
+
+async function startLiveStream() {
+  const source = ($("liveSourceInput")?.value || "").trim();
+  if (!source) {
+    alert("Vui lòng nhập Link YouTube (https://youtu.be/...) hoặc RTSP / webcam (0)");
+    return;
+  }
+  const camId = ($("liveCameraId")?.value || "CAM-01").trim();
+  const model = $("liveModelSelector")?.value || "models/yolo11s_joint_phase3.pt";
+  const targetFps = parseFloat($("liveTargetFps")?.value) || 25.0;
+  const aiFps = parseFloat($("liveAiFps")?.value) || 15.0;
+  const noHelmet = $("chkHelmet")?.checked ?? true;
+  const noVest = $("chkVest")?.checked ?? true;
+  const restrictedArea = $("chkRestricted")?.checked ?? true;
+  const sceneCut = $("chkSceneCut")?.checked ?? true;
+
+  const btnStart = $("btnStartLive");
+  const btnStop = $("btnStopLive");
+  const badge = $("liveStatusBadge");
+  const infoDisplay = $("liveSourceDisplay");
+
+  if (badge) {
+    badge.className = "nav-badge";
+    badge.style.background = "rgba(210, 153, 34, 0.2)";
+    badge.style.color = "var(--yellow)";
+    badge.style.borderColor = "var(--yellow)";
+    badge.textContent = "Đang kết nối & tải AI...";
+  }
+  if (btnStart) btnStart.disabled = true;
+
+  try {
+    const payload = {
+      camera_id: camId,
+      source: source,
+      model: model,
+      target_fps: targetFps,
+      ai_fps: aiFps,
+      enable_no_helmet: noHelmet,
+      enable_no_vest: noVest,
+      enable_restricted_area: restrictedArea,
+      enable_scene_cut: sceneCut,
+    };
+
+    const res = await fetch("/api/live/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || res.statusText);
+    }
+
+    const data = await res.json();
+    activeLiveCameraId = camId;
+
+    if (btnStart) {
+      btnStart.style.display = "none";
+      btnStart.disabled = false;
+    }
+    if (btnStop) btnStop.style.display = "inline-flex";
+
+    if (badge) {
+      badge.innerHTML = `<span class="pulse-dot"></span> ĐANG QUÉT TRỰC TIẾP (${escapeHtml(camId)})`;
+      badge.className = "badge-live-pulse";
+      badge.style = "";
+    }
+
+    if (infoDisplay) {
+      infoDisplay.innerHTML = `<span style="color:var(--accent)">${escapeHtml(source)}</span> (Model: <b>${escapeHtml(model.split('/').pop())}</b>)`;
+    }
+
+    // Hiển thị trực tiếp luồng MJPEG phát tới đâu quét tới đó
+    const img = $("liveStreamImg");
+    const placeholder = $("livePlaceholder");
+    if (img) {
+      img.src = `/api/live/${encodeURIComponent(camId)}/stream?t=${Date.now()}`;
+      img.style.display = "block";
+    }
+    if (placeholder) placeholder.style.display = "none";
+
+    // Khởi tạo vòng lặp lấy số liệu Realtime Metrics
+    if (liveStatsInterval) clearInterval(liveStatsInterval);
+    liveStatsInterval = setInterval(pollLiveStats, 800);
+    pollLiveStats();
+    loadActiveSessions();
+
+  } catch (err) {
+    alert("Lỗi khởi chạy Live Stream: " + err.message);
+    if (btnStart) {
+      btnStart.style.display = "inline-flex";
+      btnStart.disabled = false;
+    }
+    if (btnStop) btnStop.style.display = "none";
+    if (badge) {
+      badge.textContent = "Lỗi kết nối";
+      badge.style.color = "var(--red)";
+      badge.style.borderColor = "var(--red)";
+    }
+  }
+}
+
+async function stopLiveStream() {
+  const camId = activeLiveCameraId || ($("liveCameraId")?.value || "CAM-01").trim();
+  if (liveStatsInterval) {
+    clearInterval(liveStatsInterval);
+    liveStatsInterval = null;
+  }
+
+  try {
+    await fetch(`/api/live/${encodeURIComponent(camId)}/stop`, { method: "POST" });
+  } catch (e) {
+    console.error("Lỗi khi dừng session:", e);
+  }
+
+  activeLiveCameraId = null;
+  const btnStart = $("btnStartLive");
+  const btnStop = $("btnStopLive");
+  const badge = $("liveStatusBadge");
+  const img = $("liveStreamImg");
+  const placeholder = $("livePlaceholder");
+  const infoDisplay = $("liveSourceDisplay");
+
+  if (btnStart) {
+    btnStart.style.display = "inline-flex";
+    btnStart.disabled = false;
+  }
+  if (btnStop) btnStop.style.display = "none";
+
+  if (badge) {
+    badge.className = "nav-badge";
+    badge.style.background = "rgba(63, 185, 80, 0.15)";
+    badge.style.color = "var(--green)";
+    badge.style.borderColor = "var(--green)";
+    badge.textContent = "Sẵn sàng";
+  }
+
+  if (infoDisplay) infoDisplay.textContent = "Đã dừng luồng";
+
+  if (img) {
+    img.src = "";
+    img.style.display = "none";
+  }
+  if (placeholder) placeholder.style.display = "block";
+  loadActiveSessions();
+}
+
+async function pollLiveStats() {
+  if (!activeLiveCameraId) return;
+  try {
+    const res = await fetch(`/api/live/${encodeURIComponent(activeLiveCameraId)}/stats`);
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const m = data.metrics || {};
+    if ($("metricFps")) $("metricFps").textContent = (m.fps || 0).toFixed(1);
+    if ($("metricInfer")) $("metricInfer").textContent = `${Math.round(m.inference_latency_ms || 0)} ms`;
+    if ($("metricRule")) $("metricRule").textContent = `${(m.rule_latency_ms || 0).toFixed(1)} ms`;
+    if ($("metricPersons")) $("metricPersons").textContent = m.counts?.person ?? (m.active_persons || 0);
+    if ($("metricHelmets")) $("metricHelmets").textContent = m.counts?.helmet ?? 0;
+    if ($("metricVests")) $("metricVests").textContent = m.counts?.safety_vest ?? 0;
+    if ($("metricViols")) $("metricViols").textContent = m.active_violations || 0;
+
+    // Hiển thị nhật ký vi phạm trực tiếp kèm ảnh Đối chứng (Before) & ảnh Vi phạm (After)
+    const viols = data.recent_violations || [];
+    const violBox = $("liveViolationsBox");
+    const liveDualSec = $("liveDualEvidenceSection");
+    const liveDualContainer = $("liveDualEvidenceContainer");
+    const liveDualCount = $("liveDualEvidenceCount");
+
+    // Đồng bộ danh sách bằng chứng trực tiếp sang chuẩn currentSavedEvs để dùng chung Lightbox & Gallery
+    const liveEvs = viols.filter(v => v.snapshot_url).map(v => ({
+      event_id: v.event_id,
+      status: "saved",
+      isLive: true,
+      person: v.person_id ?? "?",
+      violation_type: v.violation_type,
+      duration_s: v.duration_s ?? 2.0,
+      start_t: v.start_t ?? 0.0,
+      confirmed_t: v.confirmed_t ?? 0.0,
+      frame: v.frame || 1,
+      camera_id: v.camera_id || activeLiveCameraId || "CAM-01",
+      violUrl: v.snapshot_url,
+      refUrl: v.reference_snapshot_url || v.snapshot_url,
+      has_reference: Boolean(v.reference_snapshot_url),
+      reference_type: v.reference_type || "COMPLIANT",
+      timestamp: v.timestamp,
+      e2e_alert_latency_ms: v.e2e_alert_latency_ms,
+    }));
+
+    if (liveEvs.length > 0 || !state.evidence.length) {
+      currentSavedEvs = liveEvs;
+      if ($("galleryCountBadge")) $("galleryCountBadge").textContent = String(liveEvs.length);
+      if ($("galleryTotalBadge")) $("galleryTotalBadge").textContent = `${liveEvs.length} sự cố`;
+    }
+
+    if (violBox) {
+      if (viols.length === 0) {
+        violBox.innerHTML = '<span style="color: var(--dim)">Chưa có vi phạm nào trong phiên này (hoặc người lao động tuân thủ tốt).</span>';
+      } else {
+        violBox.innerHTML = viols.slice(-15).reverse().map((v) => {
+          const p = escapeHtml(v.person_id ?? "?");
+          const vt = escapeHtml(VT_LABEL[v.violation_type] || v.violation_type);
+          const t = escapeHtml(v.timestamp ? new Date(v.timestamp).toLocaleTimeString() : "");
+          const dur = typeof v.duration_s === "number" ? `${v.duration_s.toFixed(1)}s` : "2.0s";
+          const lat = v.e2e_alert_latency_ms ? `⏱ ${v.e2e_alert_latency_ms}ms` : "";
+          const evIdx = liveEvs.findIndex(x => x.event_id === v.event_id);
+          const violUrl = v.snapshot_url ? escapeHtml(v.snapshot_url) : "";
+          const refUrl = v.reference_snapshot_url ? escapeHtml(v.reference_snapshot_url) : violUrl;
+          const clickAttr = evIdx >= 0 ? `onclick="openLightbox(${evIdx})" style="cursor:pointer;"` : "";
+
+          const thumbsHtml = violUrl ? `
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;" ${clickAttr} title="Bấm để phóng to ảnh đối chứng & vi phạm">
+              <div style="background:#0d1117;border:1px solid #2ea04366;border-radius:4px;padding:4px;">
+                <div style="font-size:10px;color:var(--green);font-weight:600;margin-bottom:3px;">📷 ĐỐI CHỨNG (BEFORE)</div>
+                <img loading="lazy" src="${refUrl}" alt="Đối chứng #${p}" onerror="this.onerror=null;this.src='${violUrl}';" style="width:100%;height:92px;object-fit:contain;background:#000;border-radius:3px;display:block;">
+              </div>
+              <div style="background:#0d1117;border:1px solid #f8514966;border-radius:4px;padding:4px;">
+                <div style="font-size:10px;color:var(--red);font-weight:600;margin-bottom:3px;">🚨 VI PHẠM (${escapeHtml(dur)})</div>
+                <img loading="lazy" src="${violUrl}" alt="Vi phạm #${p}" style="width:100%;height:92px;object-fit:contain;background:#000;border-radius:3px;display:block;">
+              </div>
+            </div>` : "";
+
+          return `<div class="live-viol-item">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="color:var(--red);font-weight:600;">🚨 Người #${p}: ${vt}</span>
+              ${evIdx >= 0 ? `<button class="btn-tool" style="font-size:10px;padding:1px 6px;" onclick="openLightbox(${evIdx})">🔍 Phóng to</button>` : ""}
+            </div>
+            <div style="font-size:11px;color:var(--dim);margin-top:2px;">
+              <span>Kéo dài ${escapeHtml(dur)} (Frame ${escapeHtml(v.frame || "—")})</span> · <span>${t}</span> · <span>${lat}</span>
+            </div>
+            ${thumbsHtml}
+          </div>`;
+        }).join("");
+      }
+    }
+
+    // Hiển thị bảng đối chứng 2 cột lớn (Before vs After) ngay dưới màn hình Live Stream
+    if (liveDualSec && liveDualContainer) {
+      if (liveEvs.length === 0) {
+        liveDualSec.style.display = "none";
+        liveDualContainer.innerHTML = "";
+      } else {
+        liveDualSec.style.display = "block";
+        if (liveDualCount) liveDualCount.textContent = `(${liveEvs.length} sự cố)`;
+        liveDualContainer.innerHTML = liveEvs.slice().reverse().map((ev) => {
+          const idx = liveEvs.indexOf(ev);
+          const pid = escapeHtml(ev.person);
+          const vt = escapeHtml(VT_LABEL[ev.violation_type] || ev.violation_type);
+          const dur = typeof ev.duration_s === "number" ? ev.duration_s.toFixed(1) : "2.0";
+          const refSrc = escapeHtml(ev.refUrl);
+          const violSrc = escapeHtml(ev.violUrl);
+          const refTypeNote = ev.reference_type === "COMPLIANT"
+            ? "Trạng thái tuân thủ hợp lệ gần nhất"
+            : "Bắt đầu theo dõi chuỗi vi phạm (T=0s)";
+
+          return `
+            <div class="dual-card">
+              <div class="dual-card-header">
+                <span><b>Người #${pid}: <span style="color:var(--red)">${vt}</span></b> (kéo dài ${escapeHtml(dur)}s liên tục · Frame ${escapeHtml(ev.frame)})</span>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <button class="btn-tool" style="font-size: 11px; padding: 2px 8px;" onclick="openLightbox(${idx})">🔍 Phóng to toàn màn hình</button>
+                </div>
+              </div>
+              <div class="dual-card-grid">
+                <div class="dual-col" onclick="openLightbox(${idx})" style="cursor: pointer;" title="Bấm để phóng to đối chứng">
+                  <span class="dual-badge ref">📷 CỘT 1: ẢNH ĐỐI CHỨNG (BEFORE)</span>
+                  <img loading="lazy" src="${refSrc}" alt="Ảnh đối chứng #${pid}" onerror="this.onerror=null;this.src='${violSrc}';">
+                  <span class="dual-col-caption">${escapeHtml(refTypeNote)} <span style="color: var(--accent);">🔍 Bấm phóng to</span></span>
+                </div>
+                <div class="dual-col" onclick="openLightbox(${idx})" style="cursor: pointer;" title="Bấm để phóng to đối chứng">
+                  <span class="dual-badge viol">🚨 CỘT 2: ẢNH VI PHẠM (XÁC NHẬN ${escapeHtml(dur)}S)</span>
+                  <img loading="lazy" src="${violSrc}" alt="Ảnh vi phạm #${pid}">
+                  <span class="dual-col-caption">Khoanh vùng vi phạm & phủ lớp đỏ cảnh báo <span style="color: var(--accent);">🔍 Bấm phóng to</span></span>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join("");
+      }
+    }
+
+    if (data.status === "error") {
+      alert("Luồng camera gặp lỗi: " + (data.error || "Không thể đọc video"));
+      stopLiveStream();
+    }
+  } catch (e) {
+    console.error("Lỗi khi poll live stats:", e);
+  }
+}
+
+async function applyHotConfig() {
+  if (!activeLiveCameraId) {
+    alert("Chưa có luồng camera nào đang chạy để cập nhật nóng.");
+    return;
+  }
+  const targetFps = parseFloat($("liveTargetFps")?.value);
+  const aiFps = parseFloat($("liveAiFps")?.value);
+  const noHelmet = $("chkHelmet")?.checked;
+  const noVest = $("chkVest")?.checked;
+  const restrictedArea = $("chkRestricted")?.checked;
+  const sceneCut = $("chkSceneCut")?.checked;
+
+  try {
+    const res = await fetch(`/api/live/${encodeURIComponent(activeLiveCameraId)}/config`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        target_fps: targetFps,
+        ai_fps: aiFps,
+        enable_no_helmet: noHelmet,
+        enable_no_vest: noVest,
+        enable_restricted_area: restrictedArea,
+        enable_scene_cut: sceneCut,
+      })
+    });
+    if (res.ok) {
+      alert("✔ Đã áp dụng cấu hình mới ngay lập tức vào luồng đang phát!");
+    } else {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      alert("Lỗi cập nhật cấu hình: " + (err.detail || res.statusText));
+    }
+  } catch (e) {
+    alert("Lỗi kết nối khi cập nhật: " + e.message);
+  }
+}
+
+async function loadActiveSessions() {
+  try {
+    const res = await fetch("/api/live/sessions");
+    if (!res.ok) return;
+    const sessions = await res.json();
+    const box = $("liveSessionsList");
+    if (!box) return;
+    if (!sessions || sessions.length === 0) {
+      box.innerHTML = '<span style="color: var(--dim)">Không có camera nào đang phát ngầm.</span>';
+      return;
+    }
+    box.innerHTML = sessions.map(s => {
+      const cid = escapeHtml(s.camera_id);
+      const st = escapeHtml(s.status);
+      const fps = s.target_fps || 25;
+      const src = escapeHtml(s.source || "");
+      const isCur = (s.camera_id === activeLiveCameraId);
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #21262d;">
+        <span><b>${cid}</b> (${fps} fps) — <span style="color:var(--dim);">${src.slice(0, 35)}...</span></span>
+        <div>
+          ${isCur ? '<span style="color:var(--green);font-size:11px;">Đang xem</span>' : `<button class="btn-tool" style="font-size:10px;padding:2px 6px;" onclick="viewSession('${cid}')">Xem</button>`}
+          <button class="btn-tool" style="color:var(--red);border-color:var(--red);font-size:10px;padding:2px 6px;margin-left:4px;" onclick="stopSessionById('${cid}')">Dừng</button>
+        </div>
+      </div>`;
+    }).join("");
+  } catch (e) {
+    console.error("Lỗi tải danh sách camera:", e);
+  }
+}
+
+function viewSession(camId) {
+  $("liveCameraId").value = camId;
+  activeLiveCameraId = camId;
+  const img = $("liveStreamImg");
+  const placeholder = $("livePlaceholder");
+  if (img) {
+    img.src = `/api/live/${encodeURIComponent(camId)}/stream?t=${Date.now()}`;
+    img.style.display = "block";
+  }
+  if (placeholder) placeholder.style.display = "none";
+  $("btnStartLive").style.display = "none";
+  $("btnStopLive").style.display = "inline-flex";
+  if (liveStatsInterval) clearInterval(liveStatsInterval);
+  liveStatsInterval = setInterval(pollLiveStats, 800);
+  pollLiveStats();
+}
+
+async function stopSessionById(camId) {
+  try {
+    await fetch(`/api/live/${encodeURIComponent(camId)}/stop`, { method: "POST" });
+    if (activeLiveCameraId === camId) {
+      stopLiveStream();
+    } else {
+      loadActiveSessions();
+    }
+  } catch (e) {
+    console.error("Lỗi dừng camera:", e);
+  }
+}
+
 
 function setEvidenceFilter(filter) {
   currentEvidenceFilter = filter;
@@ -457,15 +1117,15 @@ function openLightbox(index) {
   if (!currentSavedEvs.length) return;
   currentLightboxIdx = Math.max(0, Math.min(index, currentSavedEvs.length - 1));
   const ev = currentSavedEvs[currentLightboxIdx];
-  const v = state.violations.find(x => x.event_id === ev.event_id);
+  const v = state.violations.find(x => x.event_id === ev.event_id) || ev;
   const safeJobId = encodeURIComponent(state.jobId || "");
   const safeEvId = encodeURIComponent(ev.event_id || "");
   const vt = v ? (VT_LABEL[v.violation_type] || v.violation_type) : "Vi phạm PPE";
-  const pid = v ? v.person : "—";
+  const pid = v ? (v.person ?? v.person_id ?? "—") : "—";
   const dur = v && typeof v.duration_s === "number" ? v.duration_s.toFixed(1) : "2.0";
   const seekFrame = parseInt(ev.frame) || 1;
-  const refSrc = `/api/jobs/${safeJobId}/evidence/${safeEvId}_ref.jpg`;
-  const violSrc = `/api/jobs/${safeJobId}/evidence/${safeEvId}.jpg`;
+  const refSrc = ev.refUrl || `/api/jobs/${safeJobId}/evidence/${safeEvId}_ref.jpg`;
+  const violSrc = ev.violUrl || `/api/jobs/${safeJobId}/evidence/${safeEvId}.jpg`;
 
   $("lightboxTitle").innerHTML = `<b>Người #${escapeHtml(pid)}: ${escapeHtml(vt)}</b> <span style="color:var(--dim)">(kéo dài ${escapeHtml(dur)}s liên tục — Frame ${escapeHtml(ev.frame)})</span>`;
   $("lightboxIndex").textContent = `${currentLightboxIdx + 1} / ${currentSavedEvs.length}`;
@@ -476,11 +1136,19 @@ function openLightbox(index) {
 
   $("lightboxViolImg").src = violSrc;
 
-  $("lightboxJumpBtn").onclick = () => {
-    closeLightbox();
-    switchView('player');
-    seekToFrame(seekFrame);
-  };
+  const jumpBtn = $("lightboxJumpBtn");
+  if (jumpBtn) {
+    if (ev.isLive) {
+      jumpBtn.style.display = "none";
+    } else {
+      jumpBtn.style.display = "inline-block";
+      jumpBtn.onclick = () => {
+        closeLightbox();
+        switchView('player');
+        seekToFrame(seekFrame);
+      };
+    }
+  }
 
   $("lightboxModal").style.display = "flex";
 }
@@ -518,22 +1186,28 @@ function renderGallery() {
   let filtered = currentSavedEvs;
   if (currentEvidenceFilter !== 'ALL') {
     filtered = currentSavedEvs.filter(ev => {
-      const v = state.violations.find(x => x.event_id === ev.event_id);
-      return v && v.violation_type === currentEvidenceFilter;
+      const v = state.violations.find(x => x.event_id === ev.event_id) || ev;
+      const vtNorm = String(v?.violation_type || "").toLowerCase();
+      if (currentEvidenceFilter === "no_helmet") return vtNorm.includes("helmet");
+      if (currentEvidenceFilter === "no_safety_vest") return vtNorm.includes("vest");
+      return true;
     });
   }
 
   container.innerHTML = filtered.map((ev) => {
     const rawIdx = currentSavedEvs.indexOf(ev);
-    const v = state.violations.find(x => x.event_id === ev.event_id);
+    const v = state.violations.find(x => x.event_id === ev.event_id) || ev;
     const safeJobId = encodeURIComponent(state.jobId || "");
     const safeEvId = encodeURIComponent(ev.event_id || "");
     const vt = v ? (VT_LABEL[v.violation_type] || v.violation_type) : "Vi phạm PPE";
-    const pid = v ? v.person : "—";
+    const pid = v ? (v.person ?? v.person_id ?? "—") : "—";
     const dur = v && typeof v.duration_s === "number" ? v.duration_s.toFixed(1) : "2.0";
     const seekFrame = parseInt(ev.frame) || 1;
-    const refSrc = `/api/jobs/${safeJobId}/evidence/${safeEvId}_ref.jpg`;
-    const violSrc = `/api/jobs/${safeJobId}/evidence/${safeEvId}.jpg`;
+    const refSrc = ev.refUrl || `/api/jobs/${safeJobId}/evidence/${safeEvId}_ref.jpg`;
+    const violSrc = ev.violUrl || `/api/jobs/${safeJobId}/evidence/${safeEvId}.jpg`;
+    const jumpHtml = ev.isLive
+      ? `<button class="btn-tool" style="color: var(--accent); border-color: var(--accent);" onclick="switchView('live')">📡 Quay lại Luồng Live</button>`
+      : `<button class="btn-tool" style="color: var(--accent); border-color: var(--accent);" onclick="switchView('player');seekToFrame(${seekFrame});">▶ Xem tại Frame ${escapeHtml(ev.frame)}</button>`;
 
     return `
       <div class="gallery-card">
@@ -544,7 +1218,7 @@ function renderGallery() {
           </div>
           <div style="display: flex; gap: 10px; align-items: center;">
             <button class="btn-tool" onclick="openLightbox(${rawIdx})">🔍 Phóng to toàn màn hình</button>
-            <button class="btn-tool" style="color: var(--accent); border-color: var(--accent);" onclick="switchView('player');seekToFrame(${seekFrame});">▶ Xem tại Frame ${escapeHtml(ev.frame)}</button>
+            ${jumpHtml}
           </div>
         </div>
         <div class="gallery-grid">
@@ -870,13 +1544,17 @@ async function loadAvailableModels() {
     const r = await fetch("/api/models");
     const models = await r.json();
     const sel = $("modelSelector");
-    if (models && models.length > 0 && sel) {
-      sel.innerHTML = models.map(m => {
+    const liveSel = $("liveModelSelector");
+    if (models && models.length > 0) {
+      const html = models.map(m => {
         const safePath = escapeHtml(m.path || "");
         const safeName = escapeHtml(m.name || "");
         const safeSize = escapeHtml(m.size_mb || 0);
-        return `<option value="${safePath}" ${m.is_default ? "selected" : ""}>Model: ${safeName} (${safeSize} MB)</option>`;
+        const isRec = safePath.includes("yolo11s_joint_phase3");
+        return `<option value="${safePath}" ${isRec ? "selected" : (m.is_default ? "selected" : "")}>Model: ${safeName} (${safeSize} MB${isRec ? " - Khuyến nghị" : ""})</option>`;
       }).join("");
+      if (sel) sel.innerHTML = html;
+      if (liveSel) liveSel.innerHTML = html;
     }
   } catch (e) {
     console.error("Không thể tải danh sách models:", e);
@@ -886,10 +1564,16 @@ async function loadAvailableModels() {
 const q = new URLSearchParams(window.location.search);
 if (q.get("job")) {
   state.jobId = q.get("job");
+  switchView('player');
   loadResult();
+} else {
+  switchView('live');
 }
 loadAvailableModels();
 loadAvailableJobs();
+loadActiveSessions();
+loadLiveVideos();
+
 </script>
 </body>
 </html>

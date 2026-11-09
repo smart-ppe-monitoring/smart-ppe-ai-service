@@ -320,3 +320,48 @@ def test_api_live_endpoints_flow():
         # 6. Stop already stopped session returns 404
         res_stop_404 = client.post("/api/live/CAM-E2E-TEST/stop")
         assert res_stop_404.status_code == 404
+
+
+def test_live_before_after_evidence_urls_and_endpoint(tmp_path, monkeypatch):
+    """Verify live violations record both snapshot_url and reference_snapshot_url and serve via /api/live/evidence."""
+    from app import config
+    monkeypatch.setattr(config, "EVIDENCE_DIR", str(tmp_path))
+
+    session = LiveStreamSession(camera_id="CAM-EV", source=0, dispatch_enabled=False)
+    frame_viol = np.full((120, 160, 3), 50, dtype=np.uint8)
+    frame_ref = np.full((120, 160, 3), 120, dtype=np.uint8)
+    p_det = Detection(class_name="person", confidence=0.9, bbox=(20, 20, 100, 110), track_id=7)
+
+    ev = MagicMock(
+        event_id="a1b2c3d4e5f6",
+        camera_id="CAM-EV",
+        person_track_id=7,
+        canonical_person_id=7,
+        violation_type=VIOLATION_NO_VEST,
+        start_t=1.0,
+        confirmed_t=3.0,
+        duration_s=2.0,
+        reference_frame=frame_ref,
+        reference_bbox=(20, 20, 100, 110),
+        reference_type="COMPLIANT",
+    )
+
+    session._dispatch_evidence_async(frame_viol, [p_det], ev, 160, 120, frame_num=75)
+    assert len(session.recent_violations) == 1
+    rec = session.recent_violations[0]
+    assert rec["snapshot_url"] == "/api/live/evidence/a1b2c3d4e5f6.jpg"
+    assert rec["reference_snapshot_url"] == "/api/live/evidence/a1b2c3d4e5f6_ref.jpg"
+    assert rec["has_reference"] is True
+    assert rec["frame"] == 75
+
+    client = TestClient(app)
+    res_viol = client.get("/api/live/evidence/a1b2c3d4e5f6.jpg")
+    assert res_viol.status_code == 200
+    assert res_viol.headers["content-type"] == "image/jpeg"
+
+    res_ref = client.get("/api/live/evidence/a1b2c3d4e5f6_ref.jpg")
+    assert res_ref.status_code == 200
+    assert res_ref.headers["content-type"] == "image/jpeg"
+
+    res_bad = client.get("/api/live/evidence/evil_name.jpg")
+    assert res_bad.status_code == 400

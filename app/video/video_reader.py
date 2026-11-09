@@ -42,7 +42,7 @@ def resolve_youtube_url(url: str) -> str:
     try:
         import yt_dlp
         ydl_opts = {
-            "format": "best[ext=mp4][height<=720]/best[height<=720]/best",
+            "format": "bestvideo[ext=mp4][height<=720]/bestvideo[height<=720]/bestvideo/best[ext=mp4]/best",
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
@@ -105,7 +105,10 @@ class VideoReader:
     def open(self):
         if self._opened:
             return self
-        self._cap = cv2.VideoCapture(self.source)
+        if self._is_stream and not isinstance(self.source, int):
+            self._cap = cv2.VideoCapture(str(self.source), cv2.CAP_FFMPEG)
+        else:
+            self._cap = cv2.VideoCapture(self.source)
         if not self._cap.isOpened():
             self._cap.release()
             raise VideoSourceError(
