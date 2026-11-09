@@ -9,6 +9,8 @@ Theo tài liệu Phase 2:
     Xác nhận vi phạm (CONFIRMED_VIOLATION) thuộc VI-06 (tồn tại liên tục 3 giây).
 """
 from dataclasses import dataclass, field
+import cv2
+import numpy as np
 
 from app.association.associator import UNKNOWN as ASSOC_UNKNOWN
 from app.config import (
@@ -23,6 +25,7 @@ from app.detection.adapter import HELMET, PERSON, SAFETY_VEST
 from app.constants import (
     VIOLATION_NO_HELMET,
     VIOLATION_NO_VEST,
+    VIOLATION_RESTRICTED_AREA,
     STATE_COMPLIANT,
     STATE_CANDIDATE,
     STATE_CONFIRMED,
@@ -34,10 +37,47 @@ COMPLIANT = STATE_COMPLIANT
 VIOLATION_CANDIDATE = STATE_CANDIDATE
 CONFIRMED_VIOLATION = STATE_CONFIRMED  # trạng thái cuối do VI-06 gán
 UNKNOWN = STATE_UNKNOWN
-# VIOLATION_NO_HELMET and VIOLATION_NO_VEST imported from app.constants above
+# VIOLATION_NO_HELMET, VIOLATION_NO_VEST, VIOLATION_RESTRICTED_AREA imported from app.constants above
 
 # Lớp PPE -> mã vi phạm tương ứng
 _VIOLATION_BY_CLASS = {HELMET: VIOLATION_NO_HELMET, SAFETY_VEST: VIOLATION_NO_VEST}
+
+
+def is_inside_roi(person_bbox, roi_polygons) -> bool:
+    """Kiểm tra điểm chân (bottom-center) của người có nằm trong vùng nguy hiểm Polygon ROI không.
+
+    Theo đề cương D08.pdf Mục 2.6 & Ví dụ 5:
+    Điểm chân: P_foot = ((x1 + x2) / 2, y2).
+    """
+    if not roi_polygons:
+        return False
+    x1, y1, x2, y2 = person_bbox
+    foot_x = float((x1 + x2) / 2.0)
+    foot_y = float(y2)
+    foot_pt = (foot_x, foot_y)
+
+    polygons = roi_polygons
+    if isinstance(roi_polygons, dict):
+        polygons = [roi_polygons.get("points", [])]
+    elif isinstance(roi_polygons, (list, tuple)):
+        if len(roi_polygons) > 0:
+            first = roi_polygons[0]
+            if isinstance(first, (list, tuple)) and len(first) == 2 and isinstance(first[0], (int, float)):
+                polygons = [roi_polygons]
+            elif isinstance(first, dict):
+                polygons = [p.get("points", []) for p in roi_polygons if "points" in p]
+
+    for poly in polygons:
+        if not poly or len(poly) < 3:
+            continue
+        try:
+            poly_np = np.array(poly, dtype=np.float32)
+            dist = cv2.pointPolygonTest(poly_np, foot_pt, False)
+            if dist >= 0:
+                return True
+        except Exception:
+            continue
+    return False
 
 
 @dataclass
@@ -87,12 +127,16 @@ def evaluate(
     required_ppe=None,
     enable_no_helmet: bool = True,
     enable_no_vest: bool = True,
+    roi_polygons=None,
+    enable_restricted_area: bool = True,
 ):
     """Tính trạng thái VI-05 cho từng người (kết quả ghép VI-04) trong một frame.
 
     Hỗ trợ tham số linh hoạt:
       - required_ppe: tuple/list các lớp bắt buộc (vd: ("helmet", "safety_vest"))
       - hoặc enable_no_helmet (bool) & enable_no_vest (bool) bật/tắt riêng từng luật
+      - roi_polygons: danh sách các polygon vùng nguy hiểm
+      - enable_restricted_area (bool): bật/tắt kiểm tra xâm nhập vùng cấm
     """
     if required_ppe is not None:
         active_required = list(required_ppe)
@@ -134,6 +178,11 @@ def evaluate(
             missing = (a.helmet_track_id is None) if cls == HELMET else (a.vest_track_id is None)
             if missing:
                 violations.append(_VIOLATION_BY_CLASS[cls])
+
+        # Check restricted area intrusion if enabled and roi_polygons provided
+        if enable_restricted_area and roi_polygons:
+            if is_inside_roi(a.person_bbox, roi_polygons):
+                violations.append(VIOLATION_RESTRICTED_AREA)
 
         if violations:
             states.append(PersonState(a.person_track_id, VIOLATION_CANDIDATE, violations))

@@ -1,10 +1,6 @@
 import re
-"""VI-01: Đọc video từ file / webcam / RTSP.
-
-Xử lý: lỗi mở nguồn, frame rỗng, hết video, giải phóng tài nguyên.
-Dùng context manager để luôn release capture kể cả khi có exception.
-"""
 import time
+from urllib.parse import urlparse
 
 import cv2
 
@@ -15,6 +11,54 @@ class VideoSourceError(Exception):
     """Không mở được nguồn video hoặc lỗi nghiêm trọng khi đọc."""
 
 
+YOUTUBE_ALLOWED_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+}
+
+
+def is_youtube_url(url: str) -> bool:
+    """Check if the given string is a safe and supported YouTube URL."""
+    if not isinstance(url, str):
+        return False
+    src_str = url.strip()
+    try:
+        parsed = urlparse(src_str)
+        if parsed.scheme.lower() not in ("http", "https"):
+            return False
+        hostname = (parsed.hostname or "").lower()
+        return hostname in YOUTUBE_ALLOWED_HOSTS
+    except Exception:
+        return False
+
+
+def resolve_youtube_url(url: str) -> str:
+    """Resolve direct video/live stream URL from YouTube safely using yt-dlp."""
+    if not is_youtube_url(url):
+        raise VideoSourceError(f"URL YouTube không an toàn hoặc không được hỗ trợ: {mask_source(url)}")
+    try:
+        import yt_dlp
+        ydl_opts = {
+            "format": "best[ext=mp4][height<=720]/best[height<=720]/best",
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "extract_flat": False,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            stream_url = info.get("url")
+            if not stream_url:
+                raise VideoSourceError(f"Không thể lấy luồng video từ YouTube: {mask_source(url)}")
+            return stream_url
+    except Exception as e:
+        if isinstance(e, VideoSourceError):
+            raise
+        raise VideoSourceError(f"Lỗi phân giải YouTube qua yt-dlp: {e}")
+
 
 def mask_source(source) -> str:
     """Mask credentials in RTSP/HTTP URL string."""
@@ -22,10 +66,11 @@ def mask_source(source) -> str:
         return re.sub(r"://([^:@\s]+):(.+)@([^/@\s]+)", r"://\1:***@\3", source)
     return str(source)
 
+
 class VideoReader:
     """Iterator đọc frame tuần tự từ một nguồn video."""
 
-    def __init__(self, source, empty_frame_tolerance=None):
+    def __init__(self, source, empty_frame_tolerance=None, resolve_youtube=True):
         resolved = config.resolve_source(source)
         self.source = resolved if resolved is not None else config.DEFAULT_SOURCE
         if not self.source and self.source != 0:
@@ -33,6 +78,10 @@ class VideoReader:
                 "Chưa cấu hình nguồn video. Đặt biến môi trường VIDEO_SOURCE "
                 "hoặc truyền --source."
             )
+        self.original_source = self.source
+        if resolve_youtube and is_youtube_url(self.source):
+            self.source = resolve_youtube_url(self.source)
+
         self.empty_frame_tolerance = (
             empty_frame_tolerance
             if empty_frame_tolerance is not None
@@ -45,6 +94,7 @@ class VideoReader:
             isinstance(self.source, int)
             or src_str.startswith(stream_protocols)
             or ".m3u8" in src_str
+            or is_youtube_url(self.original_source)
         )
         self._opened = False
         self._frames_read = 0

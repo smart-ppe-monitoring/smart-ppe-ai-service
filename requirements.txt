@@ -3,6 +3,7 @@
 # Core AI / CV
 ultralytics>=8.2.0          # YOLOv8 / YOLO11 + ByteTrack built-in
 opencv-python-headless>=4.9  # Video reading, frame processing
+yt-dlp>=2024.8.6            # YouTube & live stream URL resolution
 
 # Validation
 pydantic>=2.7.0             # Schema validation (Contract 2.1.0-PPE-STABLE)

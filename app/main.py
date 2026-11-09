@@ -28,6 +28,7 @@ from app.constants import (
     LABEL_SAFETY_VEST,
     VIOLATION_NO_HELMET,
     VIOLATION_NO_VEST,
+    VIOLATION_RESTRICTED_AREA,
     SEVERITY_HIGH,
     SEVERITY_MEDIUM,
 )
@@ -73,6 +74,8 @@ def _map_violation_type(raw_type: str) -> str:
         return VIOLATION_NO_HELMET
     if "vest" in t:
         return VIOLATION_NO_VEST
+    if "restricted" in t or "area" in t:
+        return VIOLATION_RESTRICTED_AREA
     return raw_type.upper()
 
 
@@ -87,8 +90,15 @@ def _build_violation_event(
 ) -> ViolationEvent:
     """Build a Contract 2.1.0-PPE-STABLE compliant ViolationEvent."""
     v_type = _map_violation_type(ev.violation_type)
-    severity = SEVERITY_HIGH if v_type == VIOLATION_NO_HELMET else SEVERITY_MEDIUM
-    desc = "Không đội mũ bảo hộ lao động" if v_type == VIOLATION_NO_HELMET else "Không mặc áo phản quang"
+    severity = SEVERITY_HIGH if v_type in (VIOLATION_NO_HELMET, VIOLATION_RESTRICTED_AREA) else SEVERITY_MEDIUM
+    if v_type == VIOLATION_NO_HELMET:
+        desc = "Không đội mũ bảo hộ lao động"
+    elif v_type == VIOLATION_NO_VEST:
+        desc = "Không mặc áo phản quang"
+    elif v_type == VIOLATION_RESTRICTED_AREA:
+        desc = "Xâm nhập khu vực nguy hiểm / vùng cấm"
+    else:
+        desc = f"Vi phạm an toàn lao động: {v_type}"
 
     # Find the target person detection
     target_person = next(
@@ -203,6 +213,7 @@ def run_pipeline(
     show_every: int = 50,
     rules: Optional[SafetyRulesConfig] = None,
     enable_scene_cut: Optional[bool] = None,
+    roi_polygons: Optional[list] = None,
 ) -> int:
     """Run the video intelligence pipeline for a single source stream/file."""
     actual_source = source or config.VIDEO_SOURCE
@@ -280,13 +291,14 @@ def run_pipeline(
                     frame_h,
                     enable_no_helmet=enable_helmet,
                     enable_no_vest=enable_vest,
+                    roi_polygons=roi_polygons,
                 )
 
                 t_frame = (num - 1) / (reader.fps if reader.fps > 0 else 25.0)
                 confirmed = confirmation.update(t_frame, person_states, frame=frame, detections=detections)
 
                 # Draw visual bboxes on output frame
-                draw_detections(frame, detections, person_states=person_states)
+                draw_detections(frame, detections, person_states=person_states, roi_polygons=roi_polygons)
 
                 # Filter duplicates and produce final violations
                 for ev in dedup.filter(confirmed, detections, t_frame):
