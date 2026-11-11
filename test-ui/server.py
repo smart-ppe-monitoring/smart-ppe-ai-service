@@ -53,7 +53,11 @@ from app.rules.safety import evaluate as evaluate_safety
 from app.rules.confirmation import ViolationConfirmation
 from app.rules.deduplication import ViolationDeduplicator
 from app.evidence.snapshot import save_evidence
-from app.config import CONFIRMATION_DURATION_S
+from app.config import (
+    CONFIRMATION_DURATION_S,
+    CONFIRMATION_DURATION_HELMET_S,
+    CONFIRMATION_DURATION_VEST_S,
+)
 from app.video.visualizer import draw_detections
 from app.video.scene_cut import SceneCutDetector
 
@@ -375,6 +379,8 @@ def process_video(job_id, video_path, model_path=None):
             "total_frames": total,
             "model": detector.model_path,
             "confirmation_duration_s": CONFIRMATION_DURATION_S,
+            "confirmation_duration_helmet_s": CONFIRMATION_DURATION_HELMET_S,
+            "confirmation_duration_vest_s": CONFIRMATION_DURATION_VEST_S,
             "status": "done",
             "processed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -609,6 +615,7 @@ class LiveStartRequest(BaseModel):
     ai_fps: Fps = 15.0
     roi_polygons: Optional[RoiPolygons] = None
     confirmation_duration_s: ConfirmSeconds = 2.0
+    confirmation_duration_vest_s: Optional[ConfirmSeconds] = None
     enable_no_helmet: bool = True
     enable_no_vest: bool = True
     enable_restricted_area: bool = True
@@ -626,6 +633,7 @@ class LiveConfigUpdateRequest(BaseModel):
     enable_restricted_area: Optional[bool] = None
     enable_scene_cut: Optional[bool] = None
     confirmation_duration_s: Optional[ConfirmSeconds] = None
+    confirmation_duration_vest_s: Optional[ConfirmSeconds] = None
 
 
 def _resolve_live_source(raw: str):
@@ -699,6 +707,7 @@ def start_live(req: LiveStartRequest):
             ai_fps=req.ai_fps,
             roi_polygons=req.roi_polygons,
             confirmation_duration_s=req.confirmation_duration_s,
+            confirmation_duration_vest_s=req.confirmation_duration_vest_s,
             enable_no_helmet=req.enable_no_helmet,
             enable_no_vest=req.enable_no_vest,
             enable_restricted_area=req.enable_restricted_area,
@@ -759,6 +768,7 @@ def update_live_config(camera_id: str, req: LiveConfigUpdateRequest):
         enable_restricted_area=req.enable_restricted_area,
         enable_scene_cut=req.enable_scene_cut,
         confirmation_duration_s=req.confirmation_duration_s,
+        confirmation_duration_vest_s=req.confirmation_duration_vest_s,
     )
     return {
         "status": "updated",

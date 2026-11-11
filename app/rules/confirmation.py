@@ -84,8 +84,26 @@ class ViolationConfirmation:
         self._last_compliant_t = {}  # pid -> float (thời điểm gần nhất tuân thủ)
 
     def get_duration(self, violation_type: str) -> float:
-        """Lấy ngưỡng thời gian xác nhận (giây) theo loại vi phạm."""
-        val = self.duration_map.get(violation_type, self.duration_s)
+        """Lấy ngưỡng thời gian xác nhận (giây) theo loại vi phạm.
+
+        Hỗ trợ cả mã chuẩn (NO_VEST, NO_HELMET) và alias chữ thường (no_safety_vest, no_vest, no_helmet).
+        """
+        vt_raw = str(violation_type).upper()
+        if "VEST" in vt_raw:
+            vt_key = VIOLATION_NO_VEST
+        elif "HELMET" in vt_raw:
+            vt_key = VIOLATION_NO_HELMET
+        else:
+            vt_key = violation_type
+
+        val = self.duration_map.get(vt_key, self.duration_map.get(violation_type, None))
+        if val is None:
+            if vt_key == VIOLATION_NO_VEST:
+                val = CONFIRMATION_DURATION_VEST_S
+            elif vt_key == VIOLATION_NO_HELMET:
+                val = CONFIRMATION_DURATION_HELMET_S
+            else:
+                val = self.duration_s
         try:
             return max(0.5, float(val))
         except (TypeError, ValueError):

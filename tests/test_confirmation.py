@@ -201,6 +201,29 @@ def run_tests():
     feed(c_grace, 1.0, cand(4, VIOLATION_NO_HELMET))
     check("sau grace period -> bắt đầu streak", (4, VIOLATION_NO_HELMET) in c_grace._streaks)
 
+    # 15. Kiểm tra thời gian xác nhận riêng biệt giữa Mũ (2s) và Áo (4s)
+    c_diff = ViolationConfirmation()
+    # Kiểm tra mũ: 2s
+    for t in [0.0, 1.0, 1.9]:
+        evs_h = feed(c_diff, t, cand(10, VIOLATION_NO_HELMET))
+    check("Mũ chưa đủ 2.0s -> chưa xác nhận", len(evs_h) == 0)
+    evs_h_conf = feed(c_diff, 2.0, cand(10, VIOLATION_NO_HELMET))
+    check("Mũ đủ 2.0s -> xác nhận", len(evs_h_conf) == 1 and evs_h_conf[0].confirmed_t == 2.0)
+
+    # Kiểm tra áo: 2s chưa được xác nhận, phải đủ 4s
+    for t in [0.0, 1.0, 2.0, 3.0, 3.9]:
+        evs_v = feed(c_diff, t, cand(20, VIOLATION_NO_VEST))
+    check("Áo ở 2.0s hoặc 3.9s -> chưa xác nhận (cần 4.0s)", len(evs_v) == 0)
+    evs_v_conf = feed(c_diff, 4.0, cand(20, VIOLATION_NO_VEST))
+    check("Áo đủ 4.0s -> xác nhận", len(evs_v_conf) == 1 and evs_v_conf[0].confirmed_t == 4.0)
+
+    # Kiểm tra alias chữ thường "no_safety_vest" cũng nhận đúng 4.0s
+    for t in [0.0, 1.0, 2.0, 3.0, 3.9]:
+        evs_alias = feed(c_diff, t, cand(30, "no_safety_vest"))
+    check("Alias no_safety_vest ở 3.9s -> chưa xác nhận", len(evs_alias) == 0)
+    evs_alias_conf = feed(c_diff, 4.0, cand(30, "no_safety_vest"))
+    check("Alias no_safety_vest đủ 4.0s -> xác nhận", len(evs_alias_conf) == 1 and evs_alias_conf[0].confirmed_t == 4.0)
+
     return failed
 
 

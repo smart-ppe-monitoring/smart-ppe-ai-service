@@ -601,8 +601,10 @@ function renderViolations() {
       `<span style="color:var(--dim)">xác nhận t=${confT}s (vi phạm từ t=${startT}s, kéo dài ${durS}s — frame ${frameSafe}) · ` +
       `${camSafe} · id=${evIdSafe}${canonNote}</span></div>`;
   }).join("");
+  const hDur = escapeHtml(state.meta?.confirmation_duration_helmet_s ?? state.meta?.confirmation_duration_s ?? 2);
+  const vDur = escapeHtml(state.meta?.confirmation_duration_vest_s ?? 4);
   $("confirmBox").innerHTML = items ||
-    `<span style="color:var(--dim)">chưa có vi phạm nào đủ ${escapeHtml(state.meta?.confirmation_duration_s ?? 3)} giây liên tục (VI-06) và không trùng trong 30 giây (VI-07)</span>`;
+    `<span style="color:var(--dim)">chưa có vi phạm nào đủ ${hDur}s (mũ) / ${vDur}s (áo) liên tục (VI-06) và không trùng trong 30 giây (VI-07)</span>`;
 }
 
 // ---------- bằng chứng vi phạm (VI-08) & Đối chứng kép ----------
@@ -890,7 +892,7 @@ async function pollLiveStats() {
       isLive: true,
       person: v.person_id ?? "?",
       violation_type: v.violation_type,
-      duration_s: v.duration_s ?? 2.0,
+      duration_s: v.duration_s ?? ((v.violation_type || "").toLowerCase().includes("vest") ? 4.0 : 2.0),
       start_t: v.start_t ?? 0.0,
       confirmed_t: v.confirmed_t ?? 0.0,
       frame: v.frame || 1,
@@ -917,7 +919,8 @@ async function pollLiveStats() {
           const p = escapeHtml(v.person_id ?? "?");
           const vt = escapeHtml(VT_LABEL[v.violation_type] || v.violation_type);
           const t = escapeHtml(v.timestamp ? new Date(v.timestamp).toLocaleTimeString() : "");
-          const dur = typeof v.duration_s === "number" ? `${v.duration_s.toFixed(1)}s` : "2.0s";
+          const durDef = (v.violation_type || "").toLowerCase().includes("vest") ? "4.0s" : "2.0s";
+          const dur = typeof v.duration_s === "number" ? `${v.duration_s.toFixed(1)}s` : durDef;
           const lat = v.e2e_alert_latency_ms ? `⏱ ${v.e2e_alert_latency_ms}ms` : "";
           const evIdx = liveEvs.findIndex(x => x.event_id === v.event_id);
           const violUrl = v.snapshot_url ? escapeHtml(v.snapshot_url) : "";
@@ -962,7 +965,8 @@ async function pollLiveStats() {
           const idx = liveEvs.indexOf(ev);
           const pid = escapeHtml(ev.person);
           const vt = escapeHtml(VT_LABEL[ev.violation_type] || ev.violation_type);
-          const dur = typeof ev.duration_s === "number" ? ev.duration_s.toFixed(1) : "2.0";
+          const durDef = (ev.violation_type || "").toLowerCase().includes("vest") ? "4.0" : "2.0";
+          const dur = typeof ev.duration_s === "number" ? ev.duration_s.toFixed(1) : durDef;
           const refSrc = escapeHtml(ev.refUrl);
           const violSrc = escapeHtml(ev.violUrl);
           const refTypeNote = ev.reference_type === "COMPLIANT"
@@ -1122,7 +1126,8 @@ function openLightbox(index) {
   const safeEvId = encodeURIComponent(ev.event_id || "");
   const vt = v ? (VT_LABEL[v.violation_type] || v.violation_type) : "Vi phạm PPE";
   const pid = v ? (v.person ?? v.person_id ?? "—") : "—";
-  const dur = v && typeof v.duration_s === "number" ? v.duration_s.toFixed(1) : "2.0";
+  const durDef = ((v ? v.violation_type : "") || (ev ? ev.violation_type : "") || "").toLowerCase().includes("vest") ? "4.0" : "2.0";
+  const dur = v && typeof v.duration_s === "number" ? v.duration_s.toFixed(1) : durDef;
   const seekFrame = parseInt(ev.frame) || 1;
   const refSrc = ev.refUrl || `/api/jobs/${safeJobId}/evidence/${safeEvId}_ref.jpg`;
   const violSrc = ev.violUrl || `/api/jobs/${safeJobId}/evidence/${safeEvId}.jpg`;
@@ -1201,7 +1206,8 @@ function renderGallery() {
     const safeEvId = encodeURIComponent(ev.event_id || "");
     const vt = v ? (VT_LABEL[v.violation_type] || v.violation_type) : "Vi phạm PPE";
     const pid = v ? (v.person ?? v.person_id ?? "—") : "—";
-    const dur = v && typeof v.duration_s === "number" ? v.duration_s.toFixed(1) : "2.0";
+    const durDef = ((v ? v.violation_type : "") || (ev ? ev.violation_type : "") || "").toLowerCase().includes("vest") ? "4.0" : "2.0";
+  const dur = v && typeof v.duration_s === "number" ? v.duration_s.toFixed(1) : durDef;
     const seekFrame = parseInt(ev.frame) || 1;
     const refSrc = ev.refUrl || `/api/jobs/${safeJobId}/evidence/${safeEvId}_ref.jpg`;
     const violSrc = ev.violUrl || `/api/jobs/${safeJobId}/evidence/${safeEvId}.jpg`;
@@ -1302,7 +1308,8 @@ function renderEvidence() {
       const safeEvId = encodeURIComponent(ev.event_id || "");
       const vt = v ? (VT_LABEL[v.violation_type] || v.violation_type) : "Vi phạm PPE";
       const pid = v ? v.person : "—";
-      const dur = v && typeof v.duration_s === "number" ? v.duration_s.toFixed(1) : "2.0";
+      const durDef = ((v ? v.violation_type : "") || (ev ? ev.violation_type : "") || "").toLowerCase().includes("vest") ? "4.0" : "2.0";
+  const dur = v && typeof v.duration_s === "number" ? v.duration_s.toFixed(1) : durDef;
       const seekFrame = parseInt(ev.frame) || 1;
       const refSrc = `/api/jobs/${safeJobId}/evidence/${safeEvId}_ref.jpg`;
       const violSrc = `/api/jobs/${safeJobId}/evidence/${safeEvId}.jpg`;
@@ -1474,7 +1481,7 @@ function renderPersonSummary() {
   }).join("");
   $("personSummary").innerHTML = state.personTracks.length
     ? `<table class="persons"><thead><tr><th style="width:14%">Người</th><th style="width:24%">Xuất hiện</th><th style="width:24%">Mũ bảo hộ</th><th style="width:24%">Áo phản quang</th><th style="width:14%">Đánh giá</th></tr></thead><tbody>${rows}</tbody></table>
-       <div style="color:var(--dim);margin-top:6px">Trạng thái VI-05 của server: thiếu PPE bắt buộc → VI PHẠM DỰ KIẾN (chưa xác nhận — cần VI-06 tồn tại liên tục 3 giây); người &lt; 60px / confidence thấp / bị cắt khung → UNKNOWN. Kết luận cuối cùng xem thẻ VI-06 + VI-07 (đã lọc trùng 30 giây).</div>`
+       <div style="color:var(--dim);margin-top:6px">Trạng thái VI-05 của server: thiếu PPE bắt buộc → VI PHẠM DỰ KIẾN (chưa xác nhận — cần VI-06 tồn tại liên tục: mũ 2s, áo 4s); người &lt; 60px / confidence thấp / bị cắt khung → UNKNOWN. Kết luận cuối cùng xem thẻ VI-06 + VI-07 (đã lọc trùng 30 giây).</div>`
     : `<span style="color:var(--dim)">không tìm thấy người nào</span>`;
 }
 

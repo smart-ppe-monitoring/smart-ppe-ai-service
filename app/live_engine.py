@@ -169,6 +169,7 @@ class LiveStreamSession:
         ai_fps: float = 15.0,
         roi_polygons: Optional[List[Any]] = None,
         confirmation_duration_s: float = 2.0,
+        confirmation_duration_vest_s: Optional[float] = None,
         cooldown_s: float = 30.0,
         confidence_threshold: Optional[float] = None,
         enable_no_helmet: bool = True,
@@ -187,6 +188,10 @@ class LiveStreamSession:
         self.ai_fps = max(1.0, min(self.target_fps, float(ai_fps)))
         self.roi_polygons = _validate_roi_polygons(roi_polygons)
         self.confirmation_duration_s = max(MIN_CONFIRMATION_DURATION_S, float(confirmation_duration_s))
+        self.confirmation_duration_vest_s = max(
+            MIN_CONFIRMATION_DURATION_S,
+            float(confirmation_duration_vest_s if confirmation_duration_vest_s is not None else config.CONFIRMATION_DURATION_VEST_S)
+        )
         self.cooldown_s = float(cooldown_s)
         self.confidence_threshold = float(
             confidence_threshold if confidence_threshold is not None else config.CONFIDENCE_THRESHOLD
@@ -261,6 +266,7 @@ class LiveStreamSession:
         enable_restricted_area: Optional[bool] = None,
         enable_scene_cut: Optional[bool] = None,
         confirmation_duration_s: Optional[float] = None,
+        confirmation_duration_vest_s: Optional[float] = None,
     ):
         """Cập nhật nóng (hot-update) cấu hình trong khi luồng đang phát."""
         with self._lock:
@@ -282,6 +288,8 @@ class LiveStreamSession:
                 self.enable_scene_cut = bool(enable_scene_cut)
             if confirmation_duration_s is not None:
                 self.confirmation_duration_s = max(MIN_CONFIRMATION_DURATION_S, float(confirmation_duration_s))
+            if confirmation_duration_vest_s is not None:
+                self.confirmation_duration_vest_s = max(MIN_CONFIRMATION_DURATION_S, float(confirmation_duration_vest_s))
         logger.info(
             "[%s] Config updated: target_fps=%.1f, ai_fps=%.1f, helmet=%s, vest=%s, restricted=%s, scene_cut=%s",
             self.camera_id, self.target_fps, self.ai_fps,
@@ -743,7 +751,7 @@ class LiveStreamSession:
             duration_s=self.confirmation_duration_s,
             duration_map={
                 VIOLATION_NO_HELMET: self.confirmation_duration_s,
-                VIOLATION_NO_VEST: self.confirmation_duration_s,
+                VIOLATION_NO_VEST: self.confirmation_duration_vest_s,
                 VIOLATION_RESTRICTED_AREA: self.confirmation_duration_s,
             },
         )
@@ -910,6 +918,7 @@ class LiveEngineManager:
         ai_fps: float = 15.0,
         roi_polygons: Optional[List[Any]] = None,
         confirmation_duration_s: float = 2.0,
+        confirmation_duration_vest_s: Optional[float] = None,
         enable_no_helmet: bool = True,
         enable_no_vest: bool = True,
         enable_restricted_area: bool = True,
@@ -931,6 +940,7 @@ class LiveEngineManager:
                         enable_restricted_area=enable_restricted_area,
                         enable_scene_cut=enable_scene_cut,
                         confirmation_duration_s=confirmation_duration_s,
+                        confirmation_duration_vest_s=confirmation_duration_vest_s,
                     )
                     return existing
                 # Đổi source khác -> dừng session cũ
@@ -955,6 +965,7 @@ class LiveEngineManager:
                 ai_fps=ai_fps,
                 roi_polygons=roi_polygons,
                 confirmation_duration_s=confirmation_duration_s,
+                confirmation_duration_vest_s=confirmation_duration_vest_s,
                 enable_no_helmet=enable_no_helmet,
                 enable_no_vest=enable_no_vest,
                 enable_restricted_area=enable_restricted_area,
