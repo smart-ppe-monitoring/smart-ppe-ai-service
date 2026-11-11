@@ -527,6 +527,11 @@ class LiveStreamSession:
         """Ghi nhận vi phạm gần nhất phục vụ API /stats (tối đa 50 bản ghi)."""
         with self._lock:
             self.metrics["e2e_alert_latency_ms"] = e2e_latency
+            fallback_duration = (
+                self.confirmation_duration_vest_s
+                if "VEST" in (getattr(ev, "violation_type", "") or "").upper()
+                else self.confirmation_duration_s
+            )
             self.recent_violations.append({
                 "event_id": ev.event_id,
                 "camera_id": self.camera_id,
@@ -535,7 +540,7 @@ class LiveStreamSession:
                 "violation_type": ev.violation_type,
                 "start_t": getattr(ev, "start_t", 0.0),
                 "confirmed_t": getattr(ev, "confirmed_t", 0.0),
-                "duration_s": getattr(ev, "duration_s", self.confirmation_duration_s),
+                "duration_s": getattr(ev, "duration_s", None) or fallback_duration,
                 "frame": frame_num,
                 "snapshot_url": snapshot_url,
                 "reference_snapshot_url": reference_snapshot_url,
@@ -606,7 +611,7 @@ class LiveStreamSession:
         confirmation.duration_s = self.confirmation_duration_s
         confirmation.duration_map = {
             VIOLATION_NO_HELMET: self.confirmation_duration_s,
-            VIOLATION_NO_VEST: self.confirmation_duration_s,
+            VIOLATION_NO_VEST: self.confirmation_duration_vest_s,
             VIOLATION_RESTRICTED_AREA: self.confirmation_duration_s,
         }
 

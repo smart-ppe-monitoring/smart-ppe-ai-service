@@ -365,3 +365,69 @@ def test_live_before_after_evidence_urls_and_endpoint(tmp_path, monkeypatch):
 
     res_bad = client.get("/api/live/evidence/evil_name.jpg")
     assert res_bad.status_code == 400
+
+
+def test_live_stream_vest_confirmation_duration_4s():
+    """Verify live stream strictly enforces 4.0s for vest violations and does not override it to 2.0s in AI loop."""
+    from app.rules.confirmation import ViolationConfirmation
+    from app.rules.deduplication import ViolationDeduplicator
+    from unittest.mock import MagicMock
+
+    session = LiveStreamSession(
+        camera_id="CAM-VEST-TEST",
+        source=0,
+        confirmation_duration_s=2.0,
+        confirmation_duration_vest_s=4.0,
+        dispatch_enabled=False,
+    )
+    assert session.confirmation_duration_s == 2.0
+    assert session.confirmation_duration_vest_s == 4.0
+
+    confirmation = ViolationConfirmation(
+        duration_s=session.confirmation_duration_s,
+        duration_map={
+            VIOLATION_NO_HELMET: session.confirmation_duration_s,
+            VIOLATION_NO_VEST: session.confirmation_duration_vest_s,
+            VIOLATION_RESTRICTED_AREA: session.confirmation_duration_s,
+        },
+    )
+    dedup = ViolationDeduplicator(camera_id="CAM-VEST-TEST", cooldown_s=30.0)
+
+    # Mock detector that returns person #11 wearing helmet but no safety vest
+    mock_detector = MagicMock()
+    p_det = Detection(class_name="person", confidence=0.95, bbox=(50, 50, 200, 300), track_id=11)
+    h_det = Detection(class_name="helmet", confidence=0.92, bbox=(90, 50, 150, 90), track_id=None)
+    mock_detector.detect.return_value = [p_det, h_det]
+
+    dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    ai_fps_window = []
+
+    # t=0.0s: Start observing person 11 without vest
+    session._process_ai_step(1, dummy_frame, 0.0, mock_detector, confirmation, dedup, ai_fps_window)
+    assert len(session.recent_violations) == 0
+    # Ensure line 609 kept vest duration at 4.0s
+    assert confirmation.get_duration(VIOLATION_NO_VEST) == 4.0
+
+    # t=2.0s: Should NOT confirm NO_VEST yet (needs 4.0s)
+    session._process_ai_step(20, dummy_frame, 2.0, mock_detector, confirmation, dedup, ai_fps_window)
+    assert len(session.recent_violations) == 0
+    assert confirmation.get_duration(VIOLATION_NO_VEST) == 4.0
+
+    # t=3.5s: Still should NOT confirm
+    session._process_ai_step(35, dummy_frame, 3.5, mock_detector, confirmation, dedup, ai_fps_window)
+    assert len(session.recent_violations) == 0
+
+    # t=4.1s: Has exceeded 4.0s -> Now confirmed!
+    session._process_ai_step(41, dummy_frame, 4.1, mock_detector, confirmation, dedup, ai_fps_window)
+    # Wait for async background evidence dispatch thread
+    import time
+    for _ in range(20):
+        if len(session.recent_violations) > 0:
+            break
+        time.sleep(0.05)
+    assert len(session.recent_violations) == 1
+    rec = session.recent_violations[0]
+    assert rec["person_id"] == 11
+    assert rec["violation_type"] == VIOLATION_NO_VEST
+    assert rec["duration_s"] >= 4.0
+
