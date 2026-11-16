@@ -87,6 +87,14 @@ def _build_violation_event(
     all_detections: list,
     model_name: str,
     reference_snapshot_url: Optional[str] = None,
+    event_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    site_code: Optional[str] = None,
+    object_key: Optional[str] = None,
+    reference_object_key: Optional[str] = None,
+    checksum: Optional[str] = None,
+    reference_checksum: Optional[str] = None,
 ) -> ViolationEvent:
     """Build a Contract 2.1.0-PPE-STABLE compliant ViolationEvent."""
     v_type = _map_violation_type(ev.violation_type)
@@ -157,10 +165,18 @@ def _build_violation_event(
     return ViolationEvent(
         cameraCode=ev.camera_id,
         timestamp=now_iso,
+        eventId=event_id,
+        siteId=site_id,
+        cameraId=camera_id,
+        siteCode=site_code,
         evidence=Evidence(
             snapshotUrl=snapshot_url,
             referenceSnapshotUrl=reference_snapshot_url,
             clipUrl=None,
+            objectKey=object_key,
+            referenceObjectKey=reference_object_key,
+            checksum=checksum,
+            referenceChecksum=reference_checksum,
             frameResolution=FrameResolution(width=frame_w, height=frame_h),
         ),
         detections=schema_detections,

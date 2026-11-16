@@ -17,6 +17,18 @@ _sync_client: httpx.Client | None = None
 _async_client: httpx.AsyncClient | None = None
 
 
+def _build_internal_headers() -> dict[str, str]:
+    headers: dict[str, str] = {}
+    token = getattr(config, "INTERNAL_SERVICE_TOKEN", "")
+    if token:
+        headers["x-internal-service-token"] = token
+        headers["Authorization"] = f"Bearer {token}"
+    gw_secret = getattr(config, "GATEWAY_INTERNAL_SECRET", "")
+    if gw_secret:
+        headers["x-gateway-secret"] = gw_secret
+    return headers
+
+
 def get_sync_client() -> httpx.Client:
     global _sync_client
     if _sync_client is None or _sync_client.is_closed:
@@ -47,7 +59,7 @@ async def publish_event(event: ViolationEvent, sync: bool = False) -> dict:
     payload = event.model_dump(by_alias=True)
 
     client = get_async_client()
-    resp = await client.post(url, json=payload, params=params)
+    resp = await client.post(url, json=payload, params=params, headers=_build_internal_headers())
     resp.raise_for_status()
     logger.info("HTTP event published — status %d", resp.status_code)
     return resp.json()
@@ -63,7 +75,7 @@ def publish_event_sync(event: ViolationEvent, sync: bool = False) -> dict:
     payload = event.model_dump(by_alias=True)
 
     client = get_sync_client()
-    resp = client.post(url, json=payload, params=params)
+    resp = client.post(url, json=payload, params=params, headers=_build_internal_headers())
     resp.raise_for_status()
     logger.info("HTTP event published (sync) — status %d", resp.status_code)
     return resp.json()
@@ -81,7 +93,7 @@ async def publish_batch(events: list[ViolationEvent]) -> dict:
     body = {"events": [e.model_dump(by_alias=True) for e in events]}
 
     client = get_async_client()
-    resp = await client.post(url, json=body, timeout=30.0)
+    resp = await client.post(url, json=body, headers=_build_internal_headers(), timeout=30.0)
     resp.raise_for_status()
     logger.info("Batch of %d events published", len(events))
     return resp.json()
@@ -99,7 +111,7 @@ def publish_batch_sync(events: list[ViolationEvent]) -> dict:
     body = {"events": [e.model_dump(by_alias=True) for e in events]}
 
     client = get_sync_client()
-    resp = client.post(url, json=body, timeout=30.0)
+    resp = client.post(url, json=body, headers=_build_internal_headers(), timeout=30.0)
     resp.raise_for_status()
     logger.info("Batch of %d events published (sync)", len(events))
     return resp.json()

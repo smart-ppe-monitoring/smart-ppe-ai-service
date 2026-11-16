@@ -38,11 +38,18 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app import config
+from app.live_api import (
+    LIVE_MAX_WEBCAM_INDEX,
+    LIVE_SOURCE_MAX_LEN,
+    LiveConfigUpdateRequest,
+    LiveStartRequest,
+    create_common_live_router,
+    resolve_live_source,
+    resolve_model_path,
+    scan_models_from_disk,
+)
 from app.live_engine import (
-    MAX_ROI_POINTS,
-    MAX_ROI_POLYGONS,
     LiveSessionLimitError,
-    LiveStreamSession,
     live_engine_manager,
     preload_detector,
 )
@@ -541,162 +548,32 @@ async def list_jobs():
     return await asyncio.to_thread(_scan_jobs_from_disk)
 
 
-def _scan_models_from_disk() -> list[dict]:
-    models_dir = BASE_DIR.parent / "models"
-    available = []
-    if models_dir.exists():
-        for p in models_dir.glob("*.pt"):
-            if p.stat().st_size > 1000:
-                available.append({
-                    "name": p.stem,
-                    "path": f"models/{p.name}",
-                    "size_mb": round(p.stat().st_size / (1024 * 1024), 1),
-                    "is_default": "yolo11m" in p.name
-                })
-    available.sort(key=lambda x: (not x["is_default"], x["name"]))
-    return available
-
-
-@app.get("/api/models", tags=["Model Management"], summary="Liệt kê các mô hình YOLO (.pt) khả dụng")
-async def list_models():
-    """SEC-14: Offload model weight file scanning to worker thread."""
-    return await asyncio.to_thread(_scan_models_from_disk)
-
-
-def _scan_uploaded_videos() -> list[dict]:
-    """Quét các file video MP4/MKV hợp lệ trong thư mục uploads/ sẵn sàng để quét trực tiếp."""
-    videos = []
-    if UPLOAD_DIR.exists():
-        for p in sorted(UPLOAD_DIR.glob("*")):
-            if p.is_file() and p.suffix.lower() in VIDEO_EXT and p.stat().st_size > 10000:
-                videos.append({
-                    "filename": p.name,
-                    "stem": p.stem,
-                    "size_mb": round(p.stat().st_size / (1024 * 1024), 2),
-                })
-    return videos
-
-
-@app.get("/api/live/videos", tags=["Live Stream AI Engine"], summary="Danh sách video trong uploads/ sẵn sàng phát trực tiếp")
-async def list_live_videos():
-    """Liệt kê các video MP4/MKV trong uploads/ sẵn sàng để phát trực tiếp qua Live Engine."""
-    return await asyncio.to_thread(_scan_uploaded_videos)
-
-
-# ─── Live Stream AI Engine Endpoints (D08.pdf Mục 3.3, 2.6 & 6.3) ───────────────
-
-# Ràng buộc biên HTTP cho dữ liệu live (chống DoS / dữ liệu rác)
-LIVE_SOURCE_MAX_LEN = 2048
-LIVE_MAX_WEBCAM_INDEX = 9
-LIVE_ALLOWED_STREAM_SCHEMES = {"rtsp", "rtsps"}
-# Allowlist host RTSP tùy chọn (phân tách bằng dấu phẩy). Rỗng = cho phép mọi host RTSP.
+# Chống SSRF & bảo toàn mặc định an toàn trong Test-UI sandbox
 LIVE_ALLOWED_RTSP_HOSTS = {
     h.strip().lower() for h in os.getenv("LIVE_ALLOWED_RTSP_HOSTS", "").split(",") if h.strip()
 }
 # Mặc định Test-UI KHÔNG upload MinIO / bắn sự kiện tới Incident Service.
 LIVE_DISPATCH_ENABLED = os.getenv("TEST_UI_LIVE_DISPATCH", "false").strip().lower() in ("1", "true", "yes")
 
-SafeId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
-RoiCoord = Annotated[float, Field(ge=0, le=10000, allow_inf_nan=False)]
-RoiPoint = Annotated[List[RoiCoord], Field(min_length=2, max_length=2)]
-RoiPolygon = Annotated[List[RoiPoint], Field(min_length=3, max_length=MAX_ROI_POINTS)]
-RoiPolygons = Annotated[List[RoiPolygon], Field(max_length=MAX_ROI_POLYGONS)]
-Fps = Annotated[float, Field(ge=1.0, le=60.0, allow_inf_nan=False)]
-ConfirmSeconds = Annotated[float, Field(ge=0.5, le=30.0, allow_inf_nan=False)]
-
-
-class LiveStartRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    camera_id: SafeId = "CAM-01"
-    source: Annotated[str, StringConstraints(min_length=1, max_length=LIVE_SOURCE_MAX_LEN)]
-    model: Optional[Annotated[str, StringConstraints(max_length=255)]] = None
-    target_fps: Fps = 25.0
-    ai_fps: Fps = 15.0
-    roi_polygons: Optional[RoiPolygons] = None
-    confirmation_duration_s: ConfirmSeconds = 2.0
-    confirmation_duration_vest_s: Optional[ConfirmSeconds] = None
-    enable_no_helmet: bool = True
-    enable_no_vest: bool = True
-    enable_restricted_area: bool = True
-    enable_scene_cut: bool = True
-
-
-class LiveConfigUpdateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    target_fps: Optional[Fps] = None
-    ai_fps: Optional[Fps] = None
-    roi_polygons: Optional[RoiPolygons] = None
-    enable_no_helmet: Optional[bool] = None
-    enable_no_vest: Optional[bool] = None
-    enable_restricted_area: Optional[bool] = None
-    enable_scene_cut: Optional[bool] = None
-    confirmation_duration_s: Optional[ConfirmSeconds] = None
-    confirmation_duration_vest_s: Optional[ConfirmSeconds] = None
-
 
 def _resolve_live_source(raw: str):
-    """Chỉ chấp nhận nguồn live thuộc allowlist, chặn đọc file tùy ý / SSRF qua FFmpeg.
-
-    Hợp lệ:
-      - Chỉ số webcam: "0".."9"
-      - job_id của video đã upload (vd: "a1b2c3d4e5f6") hoặc tên file upload ("a1b2c3d4e5f6.mp4")
-      - URL YouTube thuộc allowlist host (resolve qua yt-dlp)
-      - URL rtsp:// / rtsps:// (tùy chọn giới hạn host qua LIVE_ALLOWED_RTSP_HOSTS)
-    """
-    src = raw.strip()
-    if any(ord(c) < 0x20 for c in src):
-        raise HTTPException(400, "Nguồn video chứa ký tự không hợp lệ")
-
-    # 1. Webcam index
-    if src.isdigit():
-        idx = int(src)
-        if idx > LIVE_MAX_WEBCAM_INDEX:
-            raise HTTPException(400, "Chỉ số webcam không hợp lệ")
-        return idx
-
-    # 2. Video đã upload (theo job_id hoặc tên file) — không dùng glob với dữ liệu client
-    stem, dot, ext = src.partition(".")
-    if JOB_ID_RE.match(stem) and (not dot or f".{ext.lower()}" in VIDEO_EXT):
-        candidates = [UPLOAD_DIR / src] if dot else [UPLOAD_DIR / f"{stem}{e}" for e in sorted(VIDEO_EXT)]
-        for cand in candidates:
-            resolved = cand.resolve()
-            if resolved.is_relative_to(UPLOAD_DIR) and resolved.is_file():
-                return str(resolved)
-
-    # 3. YouTube (allowlist host chặt chẽ)
-    if is_youtube_url(src):
-        return src
-
-    # 4. RTSP camera
-    try:
-        parsed = urlparse(src)
-    except ValueError:
-        parsed = None
-    if parsed and parsed.scheme.lower() in LIVE_ALLOWED_STREAM_SCHEMES and parsed.hostname:
-        if LIVE_ALLOWED_RTSP_HOSTS and parsed.hostname.lower() not in LIVE_ALLOWED_RTSP_HOSTS:
-            raise HTTPException(400, "Host RTSP không nằm trong danh sách cho phép")
-        return src
-
-    raise HTTPException(
-        400,
-        "Nguồn video không được hỗ trợ. Chỉ chấp nhận: chỉ số webcam, job_id video đã upload, "
-        "URL YouTube hoặc URL rtsp(s)://",
+    return resolve_live_source(
+        raw,
+        upload_dir=UPLOAD_DIR,
+        allowed_rtsp_hosts=LIVE_ALLOWED_RTSP_HOSTS,
     )
+
+
+async def list_models():
+    """SEC-14 compatibility wrapper delegating to shared async model scanner."""
+    return await asyncio.to_thread(scan_models_from_disk, MODELS_DIR)
 
 
 @app.post("/api/live/start", tags=["Live Stream AI Engine"], summary="Khởi chạy phiên quét trực tiếp (Live Stream AI)")
 def start_live(req: LiveStartRequest):
     """Khởi chạy phiên quét trực tiếp (Live Stream AI) cho camera."""
     source_val = _resolve_live_source(req.source)
-
-    model_path = None
-    if req.model:
-        model_cand = (MODELS_DIR / Path(req.model).name).resolve()
-        if not model_cand.exists() or not model_cand.is_relative_to(MODELS_DIR) or model_cand.suffix.lower() not in (".pt", ".onnx"):
-            raise HTTPException(400, f"Mô hình không hợp lệ hoặc không tồn tại: {req.model}")
-        model_path = str(model_cand)
+    model_path = resolve_model_path(req.model, MODELS_DIR)
 
     try:
         session = live_engine_manager.start_session(
@@ -726,84 +603,12 @@ def start_live(req: LiveStartRequest):
     }
 
 
-@app.get("/api/live/{camera_id}/stream", tags=["Live Stream AI Engine"], summary="Phát luồng MJPEG trực tiếp (quét tới đâu phát tới đó)")
-def get_live_stream(camera_id: str):
-    """Phát luồng MJPEG trực tiếp (quét tới đâu phát tới đó) qua multipart/x-mixed-replace."""
-    session = live_engine_manager.get_session(camera_id)
-    if not session:
-        raise HTTPException(404, f"Không tìm thấy phiên phát cho camera {camera_id}")
-    return StreamingResponse(
-        session.generate_mjpeg(),
-        media_type="multipart/x-mixed-replace; boundary=frame",
+app.include_router(
+    create_common_live_router(
+        models_dir=MODELS_DIR,
+        upload_dir=UPLOAD_DIR,
     )
-
-
-@app.get("/api/live/{camera_id}/stats", tags=["Live Stream AI Engine"], summary="Lấy số liệu thời gian thực (FPS, latency, vi phạm)")
-def get_live_stats(camera_id: str):
-    """Lấy số liệu thời gian thực: FPS, Inference Latency, Alert Latency, phát hiện hiện tại."""
-    session = live_engine_manager.get_session(camera_id)
-    if not session:
-        raise HTTPException(404, f"Không tìm thấy phiên phát cho camera {camera_id}")
-    return {
-        "camera_id": session.camera_id,
-        "status": session.status,
-        "error": session.error_message,
-        "metrics": session.metrics,
-        "recent_violations": session.recent_violations,
-    }
-
-
-@app.patch("/api/live/{camera_id}/config", tags=["Live Stream AI Engine"], summary="Điều chỉnh cấu hình nóng (hot-update) khi đang chạy")
-def update_live_config(camera_id: str, req: LiveConfigUpdateRequest):
-    """Điều chỉnh nóng (hot-update) FPS, Sampling rate hoặc ROI ngay khi video đang chạy."""
-    session = live_engine_manager.get_session(camera_id)
-    if not session:
-        raise HTTPException(404, f"Không tìm thấy phiên phát cho camera {camera_id}")
-    session.update_config(
-        target_fps=req.target_fps,
-        ai_fps=req.ai_fps,
-        roi_polygons=req.roi_polygons,
-        enable_no_helmet=req.enable_no_helmet,
-        enable_no_vest=req.enable_no_vest,
-        enable_restricted_area=req.enable_restricted_area,
-        enable_scene_cut=req.enable_scene_cut,
-        confirmation_duration_s=req.confirmation_duration_s,
-        confirmation_duration_vest_s=req.confirmation_duration_vest_s,
-    )
-    return {
-        "status": "updated",
-        "camera_id": camera_id,
-        "target_fps": session.target_fps,
-        "ai_fps": session.ai_fps,
-    }
-
-
-@app.post("/api/live/{camera_id}/stop", tags=["Live Stream AI Engine"], summary="Dừng phiên phát trực tiếp của camera")
-def stop_live_camera(camera_id: str):
-    """Dừng phiên live của camera."""
-    stopped = live_engine_manager.stop_session(camera_id)
-    if not stopped:
-        raise HTTPException(404, f"Không tìm thấy phiên phát cho camera {camera_id}")
-    return {"status": "stopped", "camera_id": camera_id}
-
-
-@app.get("/api/live/sessions", tags=["Live Stream AI Engine"], summary="Liệt kê danh sách các camera đang phát trực tiếp")
-def list_live_sessions():
-    """Liệt kê toàn bộ các camera đang chạy phiên live stream."""
-    return live_engine_manager.list_sessions()
-
-
-@app.get("/api/live/evidence/{filename}", tags=["Live Stream AI Engine"], summary="Lấy ảnh bằng chứng vi phạm trực tiếp ({event_id}.jpg / _ref.jpg)")
-def get_live_evidence(filename: str):
-    """Phục vụ ảnh vi phạm ({event_id}.jpg) và ảnh đối chứng ({event_id}_ref.jpg) của luồng Live Stream."""
-    if not EVIDENCE_FILE_RE.match(filename):
-        raise HTTPException(400, "Tên file bằng chứng không hợp lệ")
-    ev_root = Path(config.EVIDENCE_DIR).resolve()
-    target = (ev_root / filename).resolve()
-    if not target.is_relative_to(ev_root) or not target.is_file():
-        raise HTTPException(404, "Không tìm thấy ảnh bằng chứng trực tiếp")
-    return FileResponse(target, media_type="image/jpeg")
-
+)
 
 app.mount("/", StaticFiles(directory=BASE_DIR / "static", html=True), name="static")
 

@@ -64,11 +64,32 @@ def dispatch_event(event: ViolationEvent, sync: bool = False) -> str:
         return "failed"
 
 
+def _is_transient_publish_error(err: Exception) -> bool:
+    """Phân biệt lỗi tạm thời (mạng / Backend 5xx / timeout) với lỗi dữ liệu poison-pill (4xx)."""
+    if isinstance(
+        err,
+        (
+            httpx.ConnectError,
+            httpx.TimeoutException,
+            httpx.NetworkError,
+            httpx.RemoteProtocolError,
+            ConnectionError,
+            TimeoutError,
+        ),
+    ):
+        return True
+    if isinstance(err, httpx.HTTPStatusError):
+        status = err.response.status_code
+        return status >= 500 or status in (408, 425, 429)
+    return False
+
+
 def flush_offline_buffer(sync: bool = True) -> int:
     """
     Kiểm tra và đẩy toàn bộ các sự kiện đang tồn đọng trong SQLite offline buffer lên Backend.
     Trả về số lượng sự kiện đã flush thành công.
-    Tự động tăng retry counter cho các sự kiện lỗi để không làm nghẽn hàng đợi vĩnh viễn (poison-pill).
+    - Lỗi tạm thời (Backend đang khởi động lại / 5xx / mất mạng): dừng vòng lặp, KHÔNG đốt retry.
+    - Lỗi payload/4xx (poison-pill): tăng retry counter để tránh nghẽn hàng đợi vĩnh viễn.
     """
     total_flushed = 0
     while pending_count() > 0:
@@ -82,8 +103,19 @@ def flush_offline_buffer(sync: bool = True) -> int:
             total_flushed += len(events)
             logger.info("Successfully flushed batch of %d offline events", len(events))
         except Exception as err:
-            logger.warning("Offline buffer flush halted due to error (%s). Incrementing retries for batch %s", err, ids)
-            increment_retries(ids)
+            if _is_transient_publish_error(err):
+                logger.warning(
+                    "Offline buffer flush paused due to transient error (%s); preserving %d queued events",
+                    err,
+                    len(ids),
+                )
+            else:
+                logger.warning(
+                    "Offline buffer flush halted due to error (%s). Incrementing retries for batch %s",
+                    err,
+                    ids,
+                )
+                increment_retries(ids)
             break
     return total_flushed
 

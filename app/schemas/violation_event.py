@@ -31,7 +31,20 @@ class Evidence(BaseModel):
     snapshotUrl: str          # Must be a valid HTTP URL accessible from MinIO
     referenceSnapshotUrl: Optional[str] = None  # URL ảnh đối chứng chụp trước đó
     clipUrl: Optional[str] = None
+    objectKey: Optional[str] = None
+    referenceObjectKey: Optional[str] = None
+    checksum: Optional[str] = None
+    referenceChecksum: Optional[str] = None
     frameResolution: FrameResolution = Field(default_factory=FrameResolution)
+
+    @model_serializer(mode="wrap")
+    def serialize_model(self, handler):
+        res = handler(self)
+        if isinstance(res, dict):
+            for opt_key in ("objectKey", "referenceObjectKey", "checksum", "referenceChecksum"):
+                if res.get(opt_key) is None:
+                    res.pop(opt_key, None)
+        return res
 
 
 class Detection(BaseModel):
@@ -84,3 +97,16 @@ class ViolationEvent(BaseModel):
     violations: List[ViolationItem]
     summary: Optional[EventSummary] = None
     metadata: Optional[EventMetadata] = None
+    eventId: Optional[str] = None
+    siteId: Optional[str] = None
+    cameraId: Optional[str] = None
+    siteCode: Optional[str] = None
+
+    @model_serializer(mode="wrap")
+    def serialize_model(self, handler):
+        res = handler(self)
+        if isinstance(res, dict):
+            for opt_key in ("eventId", "siteId", "cameraId", "siteCode"):
+                if res.get(opt_key) is None:
+                    res.pop(opt_key, None)
+        return res

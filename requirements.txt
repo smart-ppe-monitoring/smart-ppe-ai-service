@@ -21,6 +21,7 @@ minio>=7.2.0                # MinIO S3 client
 # Optional: FastAPI health endpoint
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
+cryptography>=42.0.0
 
 # Testing
 pytest>=8.0.0

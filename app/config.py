@@ -21,18 +21,36 @@ from app.constants import (
 load_dotenv()
 
 # ─── Backend API ──────────────────────────────────────────────────────────────
-BACKEND_BASE_URL: str = os.getenv("BACKEND_BASE_URL", "http://localhost:8893")
+BACKEND_BASE_URL: str = os.getenv("BACKEND_BASE_URL", os.getenv("INCIDENT_SERVICE_URL", "http://localhost:8893"))
+CAMERA_SERVICE_URL: str = os.getenv("CAMERA_SERVICE_URL", "http://localhost:8892")
+IDENTITY_SERVICE_URL: str = os.getenv("IDENTITY_SERVICE_URL", "http://localhost:9999")
+GATEWAY_INTERNAL_SECRET: str = os.getenv("GATEWAY_INTERNAL_SECRET", "")
 INTERNAL_SERVICE_TOKEN: str = os.getenv("INTERNAL_SERVICE_TOKEN", os.getenv("AI_SERVICE_TOKEN", ""))
 
 # ─── Kafka ────────────────────────────────────────────────────────────────────
 KAFKA_BROKER: str = os.getenv("KAFKA_BROKER", "localhost:9092")
+KAFKA_ENABLED: bool = os.getenv("KAFKA_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+
+
+def _normalize_minio_endpoint(raw: str) -> tuple[str, bool]:
+    val = (raw or "localhost:9000").strip().rstrip("/")
+    if val.startswith("https://"):
+        return val[len("https://"):], True
+    if val.startswith("http://"):
+        return val[len("http://"):], False
+    return val, False
+
+
+_MINIO_ENDPOINT_HOST, _MINIO_URL_SECURE = _normalize_minio_endpoint(
+    os.getenv("MINIO_ENDPOINT", os.getenv("PPE_MINIO_ENDPOINT", "localhost:9000"))
+)
 
 # ─── MinIO ────────────────────────────────────────────────────────────────────
-MINIO_ENDPOINT: str = os.getenv("MINIO_ENDPOINT", "localhost:9000")
-MINIO_ACCESS_KEY: str = os.getenv("MINIO_ACCESS_KEY", "minio_admin")
-MINIO_SECRET_KEY: str = os.getenv("MINIO_SECRET_KEY", "")   # NEVER log this
-MINIO_SECURE: bool = os.getenv("MINIO_SECURE", "false").lower() == "true"
-MINIO_BUCKET_NAME: str = os.getenv("MINIO_BUCKET", MINIO_BUCKET)
+MINIO_ENDPOINT: str = _MINIO_ENDPOINT_HOST
+MINIO_ACCESS_KEY: str = os.getenv("MINIO_ACCESS_KEY", os.getenv("PPE_MINIO_ROOT_USER", "minio_admin"))
+MINIO_SECRET_KEY: str = os.getenv("MINIO_SECRET_KEY", os.getenv("PPE_MINIO_ROOT_PASSWORD", ""))   # NEVER log this
+MINIO_SECURE: bool = os.getenv("MINIO_SECURE", "true" if _MINIO_URL_SECURE else "false").lower() == "true"
+MINIO_BUCKET_NAME: str = os.getenv("MINIO_BUCKET", os.getenv("PPE_MINIO_BUCKET_EVIDENCES", MINIO_BUCKET))
 
 # ─── Safety Rule Fallbacks ────────────────────────────────────────────────────
 CONFIDENCE_THRESHOLD: float = float(
@@ -97,6 +115,31 @@ ID_SWITCH_MAX_DIST_RATIO: float = 0.5
 
 # ─── Local evidence directory (offline fallback) ──────────────────────────────
 EVIDENCE_DIR: str = os.getenv("EVIDENCE_DIR", "evidences")
+
+# ─── Auth / RS256 JWKS (decentralized verification) ──────────────────────────
+JWT_PUBLIC_KEY: str = os.getenv("JWT_PUBLIC_KEY", "").replace("\\n", "\n")
+JWT_PUBLIC_KEY_PATH: str = os.getenv("JWT_PUBLIC_KEY_PATH", "keys/public.key.pem")
+AUTH_JWKS_URL: str = os.getenv(
+    "AUTH_JWKS_URL",
+    f"{IDENTITY_SERVICE_URL.rstrip('/')}/.well-known/jwks.json",
+)
+JWT_JWKS_CACHE_TTL_S: int = max(30, int(os.getenv("JWT_JWKS_CACHE_TTL_S", "300")))
+
+# ─── 24/7 Live Camera Sync & Dynamic Limits ─────────────────────────────────
+LIVE_MAX_SESSIONS_DEFAULT: int = max(1, int(os.getenv("LIVE_MAX_SESSIONS", "16")))
+AI_AUTO_SYNC_ENABLED: bool = os.getenv("AI_AUTO_SYNC_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+AI_CAMERA_SYNC_INTERVAL_S: float = max(5.0, float(os.getenv("AI_CAMERA_SYNC_INTERVAL_S", "15")))
+LIVE_DISPATCH_DEFAULT: bool = os.getenv("LIVE_DISPATCH_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+LIVE_ALLOW_HTTP_STREAMS: bool = os.getenv("LIVE_ALLOW_HTTP_STREAMS", "false").strip().lower() in ("1", "true", "yes")
+LIVE_ALLOWED_RTSP_HOSTS: set[str] = {
+    h.strip().lower() for h in os.getenv("LIVE_ALLOWED_RTSP_HOSTS", "").split(",") if h.strip()
+}
+LIVE_MAX_LOCAL_EVIDENCES: int = max(50, int(os.getenv("LIVE_MAX_LOCAL_EVIDENCES", "500")))
+AI_ALLOWED_HOSTS: list[str] = [
+    h.strip()
+    for h in os.getenv("AI_ALLOWED_HOSTS", "127.0.0.1,localhost,ai-service").split(",")
+    if h.strip()
+]
 
 
 def resolve_source(source: str):

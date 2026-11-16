@@ -12,8 +12,10 @@ Quét AI thời gian thực (quét tới đâu phát tới đó) phục vụ:
 """
 
 import asyncio
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -21,6 +23,7 @@ import re
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import cv2
 import numpy as np
@@ -50,18 +53,29 @@ logger = logging.getLogger("live_engine")
 
 # Định danh camera/site được ghép vào MinIO object key và snapshot URL → chỉ cho phép ký tự an toàn.
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.IGNORECASE)
 
-# Giới hạn số phiên live đồng thời (mỗi phiên nạp 1 model YOLO + threads riêng).
-MAX_LIVE_SESSIONS = max(1, int(os.getenv("LIVE_MAX_SESSIONS", "4")))
+# Giới hạn số phiên live đồng thời mặc định (có thể cập nhật động qua Identity SystemConfig / LIVE_MAX_SESSIONS).
+DEFAULT_MAX_LIVE_SESSIONS = max(1, int(os.getenv("LIVE_MAX_SESSIONS", str(config.LIVE_MAX_SESSIONS_DEFAULT))))
+MAX_LIVE_SESSIONS = DEFAULT_MAX_LIVE_SESSIONS
 
 # Giới hạn hình học ROI để tránh tiêu tốn CPU mỗi frame.
 MAX_ROI_POLYGONS = 16
 MAX_ROI_POINTS = 64
 MIN_CONFIRMATION_DURATION_S = 0.5
+RECONNECT_BASE_DELAY_S = 1.0
+RECONNECT_MAX_DELAY_S = 30.0
 
 # Pool tái sử dụng Detector giữa các phiên để chuyển video không bị trễ 2-3 giây nạp lại PyTorch weights
 _DETECTOR_POOL_LOCK = threading.Lock()
 _DETECTOR_POOL: List[Tuple[str, Any, threading.Lock]] = []
+_DETECTOR_POOL_CAP = DEFAULT_MAX_LIVE_SESSIONS * 2
+
+
+def _set_detector_pool_cap(max_sessions: int) -> None:
+    global _DETECTOR_POOL_CAP
+    with _DETECTOR_POOL_LOCK:
+        _DETECTOR_POOL_CAP = max(2, int(max_sessions) * 2)
 
 
 def _is_mock_detector_cls() -> bool:
@@ -92,7 +106,7 @@ def _acquire_detector(model_path: str, conf: float, device: str, imgsz: int) -> 
     use_lock = threading.Lock()
     use_lock.acquire()
     with _DETECTOR_POOL_LOCK:
-        if len(_DETECTOR_POOL) < MAX_LIVE_SESSIONS * 2:
+        if len(_DETECTOR_POOL) < _DETECTOR_POOL_CAP:
             _DETECTOR_POOL.append((norm_key, det, use_lock))
     return det, use_lock
 
@@ -143,17 +157,76 @@ def _validate_safe_id(value: Any, field_name: str) -> str:
     return s
 
 
-def _validate_roi_polygons(roi_polygons: Optional[List[Any]]) -> List[Any]:
-    """Phòng thủ tầng core: giới hạn số polygon/số đỉnh ROI."""
+def _extract_point_xy(pt: Any) -> Optional[Tuple[float, float]]:
+    if isinstance(pt, dict) and "x" in pt and "y" in pt:
+        return float(pt["x"]), float(pt["y"])
+    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+        return float(pt[0]), float(pt[1])
+    return None
+
+
+def _normalize_roi_input(roi_polygons: Optional[List[Any]]) -> List[Any]:
+    """Chuẩn hóa định dạng roiPolygon từ camera-service ([{x,y}, ...]) hoặc polygon list."""
     if not roi_polygons:
         return []
-    if not isinstance(roi_polygons, (list, tuple)) or len(roi_polygons) > MAX_ROI_POLYGONS:
+    if (
+        isinstance(roi_polygons, (list, tuple))
+        and len(roi_polygons) >= 3
+        and isinstance(roi_polygons[0], dict)
+        and "x" in roi_polygons[0]
+        and "y" in roi_polygons[0]
+    ):
+        return [list(roi_polygons)]
+    return list(roi_polygons)
+
+
+def _validate_roi_polygons(roi_polygons: Optional[List[Any]]) -> List[Any]:
+    """Phòng thủ tầng core: giới hạn số polygon/số đỉnh ROI và chuẩn hóa shape."""
+    normalized = _normalize_roi_input(roi_polygons)
+    if not normalized:
+        return []
+    if len(normalized) > MAX_ROI_POLYGONS:
         raise ValueError(f"roi_polygons phải là danh sách tối đa {MAX_ROI_POLYGONS} polygon")
-    for poly in roi_polygons:
+    for poly in normalized:
         pts = poly.get("points", []) if isinstance(poly, dict) else poly
         if not isinstance(pts, (list, tuple)) or len(pts) > MAX_ROI_POINTS:
             raise ValueError(f"Mỗi polygon ROI tối đa {MAX_ROI_POINTS} điểm")
-    return list(roi_polygons)
+    return normalized
+
+
+def resolve_roi_polygons_for_frame(roi_polygons: List[Any], frame_w: int, frame_h: int) -> List[List[Tuple[int, int]]]:
+    """Chuyển đổi ROI dạng normalized [0..1] hoặc [{x, y}] sang tọa độ pixel thực tế của frame."""
+    if not roi_polygons or frame_w <= 0 or frame_h <= 0:
+        return []
+    resolved: List[List[Tuple[int, int]]] = []
+    for poly in roi_polygons:
+        raw_pts = poly.get("points", []) if isinstance(poly, dict) else poly
+        coords: List[Tuple[float, float]] = []
+        for item in raw_pts:
+            xy = _extract_point_xy(item)
+            if xy is not None:
+                coords.append(xy)
+        if len(coords) < 3:
+            continue
+        is_normalized = all(0.0 <= x <= 1.0 and 0.0 <= y <= 1.0 for x, y in coords)
+        if is_normalized:
+            resolved.append([(int(round(x * frame_w)), int(round(y * frame_h))) for x, y in coords])
+        else:
+            resolved.append([(int(round(x)), int(round(y))) for x, y in coords])
+    return resolved
+
+
+def _extract_object_key_from_url(url: Optional[str]) -> Optional[str]:
+    if not url or not isinstance(url, str):
+        return None
+    try:
+        path = urlparse(url).path
+    except Exception:
+        path = url.split("?")[0]
+    match = re.search(r"(?:^|/)(evidences/.+)$", path)
+    if match:
+        return match.group(1)
+    return None
 
 
 class LiveStreamSession:
@@ -164,6 +237,7 @@ class LiveStreamSession:
         camera_id: str,
         source: Any,
         site_id: Optional[str] = None,
+        camera_uuid: Optional[str] = None,
         model_path: Optional[str] = None,
         target_fps: float = 25.0,
         ai_fps: float = 15.0,
@@ -178,11 +252,15 @@ class LiveStreamSession:
         enable_scene_cut: bool = True,
         draw_hud: bool = True,
         dispatch_enabled: bool = True,
+        auto_reconnect: bool = False,
+        loop_on_eof: bool = False,
+        managed: bool = False,
     ):
         self.camera_id = _validate_safe_id(camera_id, "camera_id")
         self.source = source
         # site_id mặc định lấy từ cấu hình service (không tin dữ liệu client)
         self.site_id = _validate_safe_id(site_id if site_id is not None else config.SITE_CODE, "site_id")
+        self.camera_uuid = _validate_safe_id(camera_uuid, "camera_uuid") if camera_uuid else None
         self.model_path = model_path or config.YOLO_MODEL_PATH
         self.target_fps = max(1.0, min(60.0, float(target_fps)))
         self.ai_fps = max(1.0, min(self.target_fps, float(ai_fps)))
@@ -203,6 +281,11 @@ class LiveStreamSession:
         self.draw_hud = bool(draw_hud)
         # Cho phép upload MinIO + bắn sự kiện tới Incident Service (tắt cho môi trường test)
         self.dispatch_enabled = bool(dispatch_enabled)
+        self.auto_reconnect = bool(auto_reconnect)
+        self.loop_on_eof = bool(loop_on_eof)
+        self.managed = bool(managed)
+        self.reconnect_count = 0
+        self.last_frame_at: Optional[float] = None
 
         # Trạng thái phiên
         self.status = "initializing"  # initializing, running, paused, stopped, error
@@ -249,6 +332,7 @@ class LiveStreamSession:
             "e2e_alert_latency_ms": 0.0,
             "active_persons": 0,
             "active_violations": 0,
+            "reconnect_count": 0,
             "counts": self._last_counts,
         }
         self.recent_violations: List[Dict[str, Any]] = []
@@ -267,6 +351,9 @@ class LiveStreamSession:
         enable_scene_cut: Optional[bool] = None,
         confirmation_duration_s: Optional[float] = None,
         confirmation_duration_vest_s: Optional[float] = None,
+        dispatch_enabled: Optional[bool] = None,
+        auto_reconnect: Optional[bool] = None,
+        loop_on_eof: Optional[bool] = None,
     ):
         """Cập nhật nóng (hot-update) cấu hình trong khi luồng đang phát."""
         with self._lock:
@@ -290,6 +377,12 @@ class LiveStreamSession:
                 self.confirmation_duration_s = max(MIN_CONFIRMATION_DURATION_S, float(confirmation_duration_s))
             if confirmation_duration_vest_s is not None:
                 self.confirmation_duration_vest_s = max(MIN_CONFIRMATION_DURATION_S, float(confirmation_duration_vest_s))
+            if dispatch_enabled is not None:
+                self.dispatch_enabled = bool(dispatch_enabled)
+            if auto_reconnect is not None:
+                self.auto_reconnect = bool(auto_reconnect)
+            if loop_on_eof is not None:
+                self.loop_on_eof = bool(loop_on_eof)
         logger.info(
             "[%s] Config updated: target_fps=%.1f, ai_fps=%.1f, helmet=%s, vest=%s, restricted=%s, scene_cut=%s",
             self.camera_id, self.target_fps, self.ai_fps,
@@ -393,11 +486,16 @@ class LiveStreamSession:
             annotated_frame = frame_copy.copy() if frame_copy is not None else None
             if annotated_frame is not None:
                 try:
+                    pixel_roi = resolve_roi_polygons_for_frame(
+                        self.roi_polygons,
+                        frame_w,
+                        frame_h,
+                    )
                     draw_detections(
                         annotated_frame,
                         detections_copy,
                         person_states=person_states_copy,
-                        roi_polygons=self.roi_polygons,
+                        roi_polygons=pixel_roi,
                         enable_no_helmet=self.enable_no_helmet,
                         enable_no_vest=self.enable_no_vest,
                     )
@@ -406,6 +504,28 @@ class LiveStreamSession:
 
             ev_dir = Path(config.EVIDENCE_DIR).resolve()
             evidence_res = save_evidence(annotated_frame, detections_copy, ev, ev_dir)
+
+            if evidence_res.status == "saved":
+                owner_uid = getattr(self, "owner_user_id", None)
+                owner_sid = getattr(self, "owner_site_id", None) or self.site_id
+                if evidence_res.path:
+                    register_evidence_owner(
+                        Path(evidence_res.path).name,
+                        site_id=owner_sid,
+                        owner_user_id=owner_uid,
+                        managed=self.managed,
+                    )
+                if evidence_res.reference_path:
+                    register_evidence_owner(
+                        Path(evidence_res.reference_path).name,
+                        site_id=owner_sid,
+                        owner_user_id=owner_uid,
+                        managed=self.managed,
+                    )
+                _prune_local_evidence_dir(
+                    ev_dir,
+                    int(getattr(config, "LIVE_MAX_LOCAL_EVIDENCES", 500)),
+                )
 
             local_snapshot_url = (
                 f"/api/live/evidence/{Path(evidence_res.path).name}"
@@ -434,17 +554,29 @@ class LiveStreamSession:
                 return
 
             # 2. Upload MinIO nếu khả dụng
+            snap_checksum = None
+            ref_checksum = None
             if evidence_res.status == "saved" and evidence_res.path:
                 try:
                     from app.storage.minio_client import upload_snapshot
                     with open(evidence_res.path, "rb") as f:
                         img_bytes = f.read()
-                    minio_url = upload_snapshot(
-                        image_bytes=img_bytes,
-                        site_code=self.site_id,
-                        camera_code=ev.camera_id,
-                        track_id=ev.person_track_id,
-                    )
+                    snap_checksum = hashlib.sha256(img_bytes).hexdigest()
+                    try:
+                        minio_url = upload_snapshot(
+                            image_bytes=img_bytes,
+                            site_code=self.site_id,
+                            camera_code=ev.camera_id,
+                            track_id=ev.person_track_id,
+                            suffix=ev.event_id,
+                        )
+                    except TypeError:
+                        minio_url = upload_snapshot(
+                            image_bytes=img_bytes,
+                            site_code=self.site_id,
+                            camera_code=ev.camera_id,
+                            track_id=ev.person_track_id,
+                        )
                     if minio_url:
                         snapshot_url = minio_url
                 except Exception as m_err:
@@ -456,13 +588,23 @@ class LiveStreamSession:
                     from app.storage.minio_client import upload_snapshot
                     with open(evidence_res.reference_path, "rb") as f:
                         ref_bytes = f.read()
-                    minio_ref_url = upload_snapshot(
-                        image_bytes=ref_bytes,
-                        site_code=self.site_id,
-                        camera_code=ev.camera_id,
-                        track_id=ev.person_track_id,
-                        suffix="ref",
-                    )
+                    ref_checksum = hashlib.sha256(ref_bytes).hexdigest()
+                    try:
+                        minio_ref_url = upload_snapshot(
+                            image_bytes=ref_bytes,
+                            site_code=self.site_id,
+                            camera_code=ev.camera_id,
+                            track_id=ev.person_track_id,
+                            suffix=f"{ev.event_id}_ref",
+                        )
+                    except TypeError:
+                        minio_ref_url = upload_snapshot(
+                            image_bytes=ref_bytes,
+                            site_code=self.site_id,
+                            camera_code=ev.camera_id,
+                            track_id=ev.person_track_id,
+                            suffix="ref",
+                        )
                     if minio_ref_url:
                         reference_snapshot_url = minio_ref_url
                 except Exception as m_err:
@@ -484,8 +626,16 @@ class LiveStreamSession:
                 ref_name = Path(evidence_res.reference_path).name
                 contract_ref_url = f"{edge_base}/evidences/{self.site_id}/{ev.camera_id}/{ref_name}"
 
-            # 4. Đóng gói ViolationEvent chuẩn Contract
+            # 4. Đóng gói ViolationEvent chuẩn Contract (kèm UUID camera/site & objectKey MinIO nếu có)
             model_name = Path(self.model_path).name
+            snap_object_key = _extract_object_key_from_url(contract_snap_url)
+            ref_object_key = _extract_object_key_from_url(contract_ref_url) if contract_ref_url else None
+            resolved_site_uuid = self.site_id if UUID_RE.match(self.site_id) else None
+            resolved_cam_uuid = (
+                self.camera_uuid
+                if self.camera_uuid and UUID_RE.match(self.camera_uuid)
+                else (self.camera_id if UUID_RE.match(self.camera_id) else None)
+            )
             contract_event = _build_violation_event(
                 ev=ev,
                 frame_w=frame_w,
@@ -494,10 +644,19 @@ class LiveStreamSession:
                 reference_snapshot_url=contract_ref_url,
                 all_detections=detections_copy,
                 model_name=model_name,
+                event_id=ev.event_id,
+                site_id=resolved_site_uuid,
+                camera_id=resolved_cam_uuid,
+                site_code=None if resolved_site_uuid else self.site_id,
+                object_key=snap_object_key,
+                reference_object_key=ref_object_key,
+                checksum=snap_checksum,
+                reference_checksum=ref_checksum,
             )
 
             # 5. Dispatch Kafka / HTTP / Offline Buffer
-            method = dispatch_event(contract_event)
+            sync_http_only = not getattr(config, "KAFKA_ENABLED", False)
+            method = dispatch_event(contract_event, sync=sync_http_only)
             e2e_latency = round((time.time() - t_start) * 1000.0, 1)
             self._record_violation(
                 ev=ev,
@@ -596,6 +755,7 @@ class LiveStreamSession:
         t_rule_start = time.perf_counter()
         self._stabilize_person_tracks(detections, t_frame_s)
         associations = associate(detections)
+        pixel_roi = resolve_roi_polygons_for_frame(self.roi_polygons, frame_w, frame_h)
         person_states = evaluate_safety(
             detections=detections,
             associations=associations,
@@ -603,7 +763,7 @@ class LiveStreamSession:
             frame_h=frame_h,
             enable_no_helmet=self.enable_no_helmet,
             enable_no_vest=self.enable_no_vest,
-            roi_polygons=self.roi_polygons,
+            roi_polygons=pixel_roi,
             enable_restricted_area=self.enable_restricted_area,
         )
 
@@ -702,11 +862,13 @@ class LiveStreamSession:
             person_states = self._last_person_states
 
         draw_frame = raw_frame.copy()
+        frame_h, frame_w = raw_frame.shape[:2]
+        pixel_roi = resolve_roi_polygons_for_frame(self.roi_polygons, frame_w, frame_h)
         draw_detections(
             draw_frame,
             detections,
             person_states=person_states,
-            roi_polygons=self.roi_polygons,
+            roi_polygons=pixel_roi,
             enable_no_helmet=self.enable_no_helmet,
             enable_no_vest=self.enable_no_vest,
         )
@@ -726,32 +888,39 @@ class LiveStreamSession:
                 self.metrics["fps"] = round(float(len(fps_window)), 1)
                 self._frame_condition.notify_all()
 
+    def _push_status_splash(self, title: str, subtitle: str) -> None:
+        jpeg_bytes = _make_splash_jpeg(title, subtitle)
+        if not jpeg_bytes:
+            return
+        with self._lock:
+            self.latest_jpeg_bytes = jpeg_bytes
+            self._jpeg_seq += 1
+            self._frame_condition.notify_all()
+
+    @staticmethod
+    def _is_live_cctv_source(source: Any, original_source: Any = None) -> bool:
+        if isinstance(source, int):
+            return True
+        for candidate in (source, original_source):
+            s = str(candidate or "").strip().lower()
+            if s.startswith(("rtsp://", "rtsps://")):
+                return True
+            if s.startswith(("http://", "https://")) and not is_youtube_url(s):
+                if ".m3u8" in s or "stream" in s or "mjpeg" in s:
+                    return True
+        return False
+
+    def _stop_ai_worker(self) -> None:
+        with self._ai_lock:
+            self._ai_done = True
+            self._ai_cond.notify_all()
+        if self._ai_thread and self._ai_thread.is_alive():
+            self._ai_thread.join(timeout=1.5)
+        self._ai_thread = None
+
     def _run_loop(self):
-        """Vòng lặp chính: Mở nguồn -> Phát ngay Frame #1 -> Pacing 25 FPS mượt mà + AI bất đồng bộ."""
+        """Vòng lặp chính 24/7: Mở nguồn -> Pacing mượt mà -> AI bất đồng bộ -> Tự reconnect / loop."""
         logger.info("[%s] Opening video source: %s", self.camera_id, mask_source(self.source))
-        try:
-            reader = VideoReader(self.source)
-        except VideoSourceError as e:
-            self.status = "error"
-            self.error_message = mask_source(str(e))
-            logger.error("[%s] Failed to open video reader: %s", self.camera_id, e)
-            return
-
-        detector_lock: Optional[threading.Lock] = None
-        try:
-            detector, detector_lock = _acquire_detector(
-                model_path=self.model_path,
-                conf=self.confidence_threshold,
-                device=config.DEVICE,
-                imgsz=config.MODEL_IMGSZ,
-            )
-        except DetectorError as e:
-            self.status = "error"
-            self.error_message = mask_source(str(e))
-            logger.error("[%s] Failed to load detector: %s", self.camera_id, e)
-            reader.release()
-            return
-
         confirmation = ViolationConfirmation(
             duration_s=self.confirmation_duration_s,
             duration_map={
@@ -761,116 +930,185 @@ class LiveStreamSession:
             },
         )
         dedup = ViolationDeduplicator(camera_id=self.camera_id, cooldown_s=self.cooldown_s)
-
-        self.status = "running"
-        logger.info("[%s] LiveStreamSession started running successfully", self.camera_id)
-
         run_ai_inline = _is_mock_detector_cls()
         ai_fps_window: List[float] = []
+        fps_window: List[float] = []
         cut_detector = SceneCutDetector() if self.enable_scene_cut else None
 
-        if not run_ai_inline:
-            self._ai_done = False
-            self._ai_thread = threading.Thread(
-                target=self._ai_worker_loop,
-                args=(detector, confirmation, dedup),
-                name=f"live-ai-{self.camera_id}",
-                daemon=True,
-            )
-            self._ai_thread.start()
-
-        # Xác định nguồn có cần điều phối tốc độ phát (pacing) hay không:
-        # - Camera trực tiếp (webcam chỉ số int hoặc RTSP cctv) tự động giới hạn FPS theo phần cứng.
-        # - File MP4 và video YouTube VOD đều cần hãm tốc độ đúng theo target_fps (25 FPS) để không bị tua nhanh.
-        src_str = str(self.source).strip().lower()
-        orig_str = str(getattr(reader, "original_source", self.source)).strip().lower()
-        is_live_cctv = (
-            isinstance(self.source, int)
-            or src_str.startswith(("rtsp://", "rtsps://"))
-            or orig_str.startswith(("rtsp://", "rtsps://"))
-        )
-        needs_pacing = not is_live_cctv
-
-        last_ai_submit_t = 0.0
-        fps_window: List[float] = []
-        last_frame_tick = time.perf_counter()
+        reconnect_attempt = 0
+        fatal_error = False
 
         try:
-            with reader:
-                for frame_num, frame in reader:
-                    if self._stop_requested.is_set():
+            while not self._stop_requested.is_set():
+                try:
+                    reader = VideoReader(self.source)
+                except VideoSourceError as e:
+                    masked_err = mask_source(str(e))
+                    self.error_message = masked_err
+                    logger.error("[%s] Failed to open video reader: %s", self.camera_id, masked_err)
+                    if not self.auto_reconnect:
+                        fatal_error = True
+                        self.status = "error"
                         break
+                    reconnect_attempt += 1
+                    self.reconnect_count += 1
+                    self.metrics["reconnect_count"] = self.reconnect_count
+                    self.status = "reconnecting"
+                    delay = min(RECONNECT_MAX_DELAY_S, RECONNECT_BASE_DELAY_S * (2 ** min(reconnect_attempt - 1, 5)))
+                    self._push_status_splash(
+                        f"CAM: {self.camera_id} - MAT KET NOI",
+                        f"Thu ket noi lai sau {int(delay)}s (lan {self.reconnect_count})...",
+                    )
+                    self._stop_requested.wait(delay)
+                    continue
 
-                    self.frame_number = frame_num
+                detector_lock: Optional[threading.Lock] = None
+                try:
+                    detector, detector_lock = _acquire_detector(
+                        model_path=self.model_path,
+                        conf=self.confidence_threshold,
+                        device=config.DEVICE,
+                        imgsz=config.MODEL_IMGSZ,
+                    )
+                except DetectorError as e:
+                    reader.release()
+                    self.status = "error"
+                    fatal_error = True
+                    self.error_message = mask_source(str(e))
+                    logger.error("[%s] Failed to load detector: %s", self.camera_id, e)
+                    break
 
-                    # 1. Pacing: Điều phối tốc độ phát chuẩn theo target_fps (25 FPS mượt mà cho MP4 & YouTube)
-                    if needs_pacing and frame_num > 1:
-                        expected_interval = 1.0 / self.target_fps
-                        elapsed_since_last = time.perf_counter() - last_frame_tick
-                        if elapsed_since_last < expected_interval:
-                            time.sleep(expected_interval - elapsed_since_last)
-                    last_frame_tick = time.perf_counter()
+                reconnect_attempt = 0
+                self.error_message = None
+                self.status = "running"
+                logger.info("[%s] LiveStreamSession started running successfully", self.camera_id)
 
-                    # 2. Phát hiện chuyển cảnh (Scene Cut) nếu được bật
-                    is_cut = False
-                    if cut_detector is not None and cut_detector.check(frame):
-                        is_cut = True
-                        logger.info("[%s] Scene cut detected at frame %d, resetting tracker & confirmation", self.camera_id, frame_num)
+                if not run_ai_inline:
+                    self._ai_done = False
+                    self._pending_ai_item = None
+                    self._ai_thread = threading.Thread(
+                        target=self._ai_worker_loop,
+                        args=(detector, confirmation, dedup),
+                        name=f"live-ai-{self.camera_id}",
+                        daemon=True,
+                    )
+                    self._ai_thread.start()
+
+                orig_src = getattr(reader, "original_source", self.source)
+                is_live_cctv = self._is_live_cctv_source(self.source, orig_src)
+                needs_pacing = not is_live_cctv
+                last_ai_submit_t = 0.0
+                last_frame_tick = time.perf_counter()
+
+                try:
+                    with reader:
+                        for frame_num, frame in reader:
+                            if self._stop_requested.is_set():
+                                break
+
+                            self.frame_number += 1
+                            self.last_frame_at = time.time()
+
+                            if needs_pacing and frame_num > 1:
+                                expected_interval = 1.0 / self.target_fps
+                                elapsed_since_last = time.perf_counter() - last_frame_tick
+                                if elapsed_since_last < expected_interval:
+                                    time.sleep(expected_interval - elapsed_since_last)
+                            last_frame_tick = time.perf_counter()
+
+                            is_cut = False
+                            if cut_detector is not None and cut_detector.check(frame):
+                                is_cut = True
+                                logger.info("[%s] Scene cut detected at frame %d, resetting tracker & confirmation", self.camera_id, frame_num)
+                                try:
+                                    detector.reset_tracker()
+                                except Exception:
+                                    pass
+                                confirmation.reset()
+                                self._track_alias.clear()
+                                self._track_last_bbox.clear()
+                                self._track_last_seen.clear()
+                                with self._lock:
+                                    self._last_detections = []
+                                    self._last_person_states = []
+                                    self._last_counts = {"person": 0, "helmet": 0, "safety_vest": 0}
+
+                            if frame_num == 1 and not run_ai_inline:
+                                self._encode_and_publish_frame(frame, fps_window)
+
+                            now_perf = time.perf_counter()
+                            ai_interval = 1.0 / self.ai_fps
+                            should_run_ai = (frame_num == 1) or is_cut or (now_perf - last_ai_submit_t >= ai_interval - 0.003)
+
+                            if should_run_ai:
+                                last_ai_submit_t = now_perf
+                                eff_fps = self.target_fps if needs_pacing else (reader.fps if reader.fps > 0 else 25.0)
+                                t_frame_s = round((frame_num - 1) / eff_fps, 3)
+                                if run_ai_inline:
+                                    self._process_ai_step(
+                                        frame_num, frame, t_frame_s, detector, confirmation, dedup, ai_fps_window
+                                    )
+                                else:
+                                    with self._ai_lock:
+                                        self._pending_ai_item = (frame_num, frame.copy(), t_frame_s)
+                                        self._ai_cond.notify()
+
+                            self._encode_and_publish_frame(frame, fps_window)
+                finally:
+                    self._stop_ai_worker()
+                    if detector_lock is not None:
                         try:
                             detector.reset_tracker()
                         except Exception:
                             pass
-                        confirmation.reset()
-                        self._track_alias.clear()
-                        self._track_last_bbox.clear()
-                        self._track_last_seen.clear()
-                        with self._lock:
-                            self._last_detections = []
-                            self._last_person_states = []
-                            self._last_counts = {"person": 0, "helmet": 0, "safety_vest": 0}
+                        detector_lock.release()
 
-                    # Hiển thị ngay lập tức Frame #1 lên trình duyệt trước khi chờ AI suy luận
-                    if frame_num == 1 and not run_ai_inline:
-                        self._encode_and_publish_frame(frame, fps_window)
+                if self._stop_requested.is_set():
+                    break
 
-                    # 3. Gửi frame sang luồng AI theo nhịp ai_fps (hoặc ngay lập tức nếu vừa chuyển cảnh)
-                    now_perf = time.perf_counter()
-                    ai_interval = 1.0 / self.ai_fps
-                    should_run_ai = (frame_num == 1) or is_cut or (now_perf - last_ai_submit_t >= ai_interval - 0.003)
+                # Quyết định tiếp tục vòng đời 24/7 khi stream rớt hoặc video EOF
+                confirmation.reset()
+                self._track_alias.clear()
+                self._track_last_bbox.clear()
+                self._track_last_seen.clear()
 
-                    if should_run_ai:
-                        last_ai_submit_t = now_perf
-                        eff_fps = self.target_fps if needs_pacing else (reader.fps if reader.fps > 0 else 25.0)
-                        t_frame_s = round((frame_num - 1) / eff_fps, 3)
-                        if run_ai_inline:
-                            self._process_ai_step(
-                                frame_num, frame, t_frame_s, detector, confirmation, dedup, ai_fps_window
-                            )
-                        else:
-                            with self._ai_lock:
-                                self._pending_ai_item = (frame_num, frame.copy(), t_frame_s)
-                                self._ai_cond.notify()
+                if not is_live_cctv and self.loop_on_eof:
+                    logger.info("[%s] Video EOF reached, restarting 24/7 loop", self.camera_id)
+                    self._stop_requested.wait(0.2)
+                    continue
 
-                    # 4. Vẽ kết quả AI mới nhất & phát luồng MJPEG ở tốc độ thực (25 FPS)
-                    self._encode_and_publish_frame(frame, fps_window)
+                if self.auto_reconnect:
+                    reconnect_attempt += 1
+                    self.reconnect_count += 1
+                    self.metrics["reconnect_count"] = self.reconnect_count
+                    self.status = "reconnecting"
+                    delay = min(RECONNECT_MAX_DELAY_S, RECONNECT_BASE_DELAY_S * (2 ** min(reconnect_attempt - 1, 5)))
+                    logger.warning(
+                        "[%s] Stream ended unexpectedly, reconnecting in %.1fs (attempt %d)",
+                        self.camera_id, delay, self.reconnect_count,
+                    )
+                    self._push_status_splash(
+                        f"CAM: {self.camera_id} - DANG KET NOI LAI...",
+                        f"Thu lai sau {int(delay)}s (lan {self.reconnect_count})...",
+                    )
+                    self._stop_requested.wait(delay)
+                    continue
+
+                break
 
         except Exception as e:
+            fatal_error = True
             self.status = "error"
             self.error_message = mask_source(f"{type(e).__name__}: {e}")
             logger.error("[%s] Unhandled exception in live loop: %s", self.camera_id, e, exc_info=True)
         finally:
-            with self._ai_lock:
-                self._ai_done = True
-                self._ai_cond.notify_all()
-            if self._ai_thread and self._ai_thread.is_alive():
-                self._ai_thread.join(timeout=1.5)
-            if detector_lock is not None:
-                try:
-                    detector.reset_tracker()
-                except Exception:
-                    pass
-                detector_lock.release()
-            self.status = "stopped"
+            self._stop_ai_worker()
+            try:
+                self._evidence_executor.shutdown(wait=False)
+            except Exception:
+                pass
+            if not fatal_error:
+                self.status = "stopped"
             with self._lock:
                 self._frame_condition.notify_all()
             logger.info("[%s] Live loop finished", self.camera_id)
@@ -880,10 +1118,10 @@ class LiveStreamSession:
         last_yielded_seq = -1
         while not self._stop_requested.is_set():
             with self._lock:
-                # Đợi frame mới sẵn sàng (hỗ trợ cả trạng thái initializing lẫn running)
+                # Đợi frame mới sẵn sàng (bao gồm cả lúc reconnecting 24/7)
                 while (
                     not self._stop_requested.is_set()
-                    and self.status in ("initializing", "running")
+                    and self.status in ("initializing", "running", "reconnecting")
                     and (self.latest_jpeg_bytes is None or self._jpeg_seq == last_yielded_seq)
                 ):
                     self._frame_condition.wait(timeout=0.2)
@@ -901,13 +1139,83 @@ class LiveStreamSession:
                 )
 
 
-class LiveEngineManager:
-    """Quản lý tập trung các phiên LiveStreamSession theo camera_id."""
+_EVIDENCE_OWNERS_LOCK = threading.Lock()
+_EVIDENCE_OWNERS: "OrderedDict[str, tuple[Optional[str], Optional[str], bool]]" = OrderedDict()
+_MAX_TRACKED_EVIDENCES = 5000
 
-    def __init__(self, max_sessions: int = MAX_LIVE_SESSIONS):
+
+def register_evidence_owner(
+    filename: str,
+    site_id: Optional[str],
+    owner_user_id: Optional[str] = None,
+    managed: bool = False,
+) -> None:
+    if not filename:
+        return
+    with _EVIDENCE_OWNERS_LOCK:
+        if filename in _EVIDENCE_OWNERS:
+            _EVIDENCE_OWNERS.move_to_end(filename)
+        _EVIDENCE_OWNERS[filename] = (site_id, owner_user_id, bool(managed))
+        while len(_EVIDENCE_OWNERS) > _MAX_TRACKED_EVIDENCES:
+            _EVIDENCE_OWNERS.popitem(last=False)
+
+
+def get_evidence_owner(filename: str) -> Optional[tuple[Optional[str], Optional[str], bool]]:
+    if not filename:
+        return None
+    with _EVIDENCE_OWNERS_LOCK:
+        return _EVIDENCE_OWNERS.get(filename)
+
+
+def _prune_local_evidence_dir(ev_dir: Path, max_files: int) -> None:
+    if max_files <= 0 or not ev_dir.is_dir():
+        return
+    try:
+        files = [p for p in ev_dir.glob("*.jpg") if p.is_file()]
+        if len(files) <= max_files:
+            return
+        files.sort(key=lambda p: p.stat().st_mtime)
+        for old_file in files[: len(files) - max_files]:
+            try:
+                old_file.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
+class LiveEngineManager:
+    """Quản lý tập trung các phiên LiveStreamSession theo camera_id (hỗ trợ giới hạn động)."""
+
+    def __init__(self, max_sessions: int = DEFAULT_MAX_LIVE_SESSIONS):
         self._sessions: Dict[str, LiveStreamSession] = {}
         self._lock = threading.Lock()
         self.max_sessions = max(1, int(max_sessions))
+        _set_detector_pool_cap(self.max_sessions)
+
+    @staticmethod
+    def register_evidence(
+        filename: str,
+        site_id: Optional[str],
+        owner_user_id: Optional[str] = None,
+        managed: bool = False,
+    ) -> None:
+        register_evidence_owner(filename, site_id=site_id, owner_user_id=owner_user_id, managed=managed)
+
+    @staticmethod
+    def get_evidence_owner(filename: str) -> Optional[tuple[Optional[str], Optional[str], bool]]:
+        return get_evidence_owner(filename)
+
+    def set_max_sessions(self, new_limit: int) -> int:
+        clamped = max(1, min(256, int(new_limit)))
+        with self._lock:
+            self.max_sessions = clamped
+        _set_detector_pool_cap(clamped)
+        return clamped
+
+    def get_max_sessions(self) -> int:
+        with self._lock:
+            return self.max_sessions
 
     def get_session(self, camera_id: str) -> Optional[LiveStreamSession]:
         with self._lock:
@@ -918,6 +1226,7 @@ class LiveEngineManager:
         camera_id: str,
         source: Any,
         site_id: Optional[str] = None,
+        camera_uuid: Optional[str] = None,
         model_path: Optional[str] = None,
         target_fps: float = 25.0,
         ai_fps: float = 15.0,
@@ -929,13 +1238,16 @@ class LiveEngineManager:
         enable_restricted_area: bool = True,
         enable_scene_cut: bool = True,
         dispatch_enabled: bool = True,
+        auto_reconnect: bool = False,
+        loop_on_eof: bool = False,
+        managed: bool = False,
     ) -> LiveStreamSession:
         camera_id = _validate_safe_id(camera_id, "camera_id")
         with self._lock:
             existing = self._sessions.get(camera_id)
-            if existing and existing.status in ("running", "initializing"):
-                # Cập nhật cấu hình nếu cùng source
-                if existing.source == source:
+            if existing and existing.status in ("running", "initializing", "reconnecting"):
+                # Cập nhật cấu hình nếu cùng source và site/camera không đổi
+                if existing.source == source and (site_id is None or existing.site_id == site_id):
                     existing.update_config(
                         target_fps=target_fps,
                         ai_fps=ai_fps,
@@ -946,7 +1258,13 @@ class LiveEngineManager:
                         enable_scene_cut=enable_scene_cut,
                         confirmation_duration_s=confirmation_duration_s,
                         confirmation_duration_vest_s=confirmation_duration_vest_s,
+                        dispatch_enabled=dispatch_enabled,
+                        auto_reconnect=auto_reconnect,
+                        loop_on_eof=loop_on_eof,
                     )
+                    if camera_uuid:
+                        existing.camera_uuid = _validate_safe_id(camera_uuid, "camera_uuid")
+                    existing.managed = bool(managed)
                     return existing
                 # Đổi source khác -> dừng session cũ
                 existing.stop()
@@ -965,6 +1283,7 @@ class LiveEngineManager:
                 camera_id=camera_id,
                 source=source,
                 site_id=site_id,
+                camera_uuid=camera_uuid,
                 model_path=model_path,
                 target_fps=target_fps,
                 ai_fps=ai_fps,
@@ -976,6 +1295,9 @@ class LiveEngineManager:
                 enable_restricted_area=enable_restricted_area,
                 enable_scene_cut=enable_scene_cut,
                 dispatch_enabled=dispatch_enabled,
+                auto_reconnect=auto_reconnect,
+                loop_on_eof=loop_on_eof,
+                managed=managed,
             )
             self._sessions[camera_id] = session
 
@@ -996,11 +1318,17 @@ class LiveEngineManager:
             return [
                 {
                     "camera_id": cid,
+                    "camera_uuid": s.camera_uuid,
+                    "site_id": s.site_id,
                     "status": s.status,
+                    "managed": s.managed,
+                    "reconnect_count": s.reconnect_count,
+                    "dispatch_enabled": s.dispatch_enabled,
                     "target_fps": s.target_fps,
                     "ai_fps": s.ai_fps,
                     "source": mask_source(s.source),
                     "metrics": s.metrics,
+                    "error": s.error_message,
                 }
                 for cid, s in self._sessions.items()
             ]
