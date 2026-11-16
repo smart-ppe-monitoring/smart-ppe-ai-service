@@ -129,7 +129,7 @@ JWT_JWKS_CACHE_TTL_S: int = max(30, int(os.getenv("JWT_JWKS_CACHE_TTL_S", "300")
 LIVE_MAX_SESSIONS_DEFAULT: int = max(1, int(os.getenv("LIVE_MAX_SESSIONS", "16")))
 AI_AUTO_SYNC_ENABLED: bool = os.getenv("AI_AUTO_SYNC_ENABLED", "true").strip().lower() in ("1", "true", "yes")
 AI_CAMERA_SYNC_INTERVAL_S: float = max(5.0, float(os.getenv("AI_CAMERA_SYNC_INTERVAL_S", "15")))
-LIVE_DISPATCH_DEFAULT: bool = os.getenv("LIVE_DISPATCH_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+LIVE_DISPATCH_DEFAULT: bool = (os.getenv("LIVE_DISPATCH_ENABLED") or "true").strip().lower() in ("1", "true", "yes")
 LIVE_ALLOW_HTTP_STREAMS: bool = os.getenv("LIVE_ALLOW_HTTP_STREAMS", "false").strip().lower() in ("1", "true", "yes")
 LIVE_ALLOWED_RTSP_HOSTS: set[str] = {
     h.strip().lower() for h in os.getenv("LIVE_ALLOWED_RTSP_HOSTS", "").split(",") if h.strip()

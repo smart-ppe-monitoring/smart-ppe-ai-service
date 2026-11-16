@@ -581,3 +581,22 @@ def test_sync_once_trims_excess_managed_sessions_when_limit_shrinks():
                 assert len(st2["skipped_over_limit"]) == 2
         finally:
             mgr.stop_all()
+
+
+def test_live_dispatch_default_ignores_test_ui_env(monkeypatch):
+    import runpy
+
+    config_path = str(Path(config.__file__).resolve())
+    with patch("dotenv.load_dotenv"):
+        monkeypatch.delenv("LIVE_DISPATCH_ENABLED", raising=False)
+        monkeypatch.setenv("TEST_UI_LIVE_DISPATCH", "false")
+        ns_default = runpy.run_path(config_path)
+        assert ns_default["LIVE_DISPATCH_DEFAULT"] is True
+
+        monkeypatch.setenv("LIVE_DISPATCH_ENABLED", "")
+        ns_empty = runpy.run_path(config_path)
+        assert ns_empty["LIVE_DISPATCH_DEFAULT"] is True
+
+        monkeypatch.setenv("LIVE_DISPATCH_ENABLED", "false")
+        ns_disabled = runpy.run_path(config_path)
+        assert ns_disabled["LIVE_DISPATCH_DEFAULT"] is False
