@@ -17,7 +17,9 @@ from typing import Any, Dict, List, Optional
 
 from app import config
 from app.clients.backend_client import (
+    check_internal_camera_exists_sync,
     fetch_dynamic_live_max_sessions_sync,
+    fetch_effective_rules_sync,
     fetch_internal_active_streams_sync,
 )
 from app.events import flush_offline_buffer
@@ -25,6 +27,7 @@ from app.events.offline_buffer import pending_count
 from app.live_engine import (
     LiveEngineManager,
     LiveSessionLimitError,
+    UUID_RE,
     live_engine_manager,
 )
 from app.video.video_reader import mask_source
@@ -65,6 +68,7 @@ class CameraSyncManager:
         self.last_synced_count: int = 0
         self.skipped_over_limit: List[str] = []
         self.dynamic_max_sessions: Optional[int] = None
+        self._known_db_camera_codes: set[str] = set()
 
     def get_status(self) -> Dict[str, Any]:
         return {
@@ -120,14 +124,46 @@ class CameraSyncManager:
                 if not code or not stream_url:
                     continue
                 desired_map[code] = cam
+            self._known_db_camera_codes.update(desired_map.keys())
 
-            # 4. Dừng các phiên được quản lý (managed=True) nếu camera không còn ONLINE
+            # 4. Dừng phiên được quản lý (managed=True) khi không còn ONLINE
+            #    và dừng phiên mồ côi (managed=False) nếu camera DB đã bị xóa
             current_sessions = self.manager.list_sessions()
             for sess in current_sessions:
                 cid = sess["camera_id"]
                 if sess.get("managed") and cid not in desired_map:
                     logger.info("[%s] Stopping managed session (camera no longer active ONLINE)", cid)
                     self.manager.stop_session(cid)
+                    continue
+
+                if (
+                    not sess.get("managed")
+                    and sess.get("status") not in ("stopped", "error")
+                    and cid not in desired_map
+                ):
+                    sess_obj = self.manager.get_session(cid)
+                    linked_uuid = (
+                        sess.get("camera_uuid")
+                        or (getattr(sess_obj, "_sync_camera_uuid", None) if sess_obj else None)
+                        or (cid if UUID_RE.match(cid) else None)
+                    )
+                    linked_code = (
+                        None
+                        if linked_uuid
+                        else (cid if cid in self._known_db_camera_codes else None)
+                    )
+                    if linked_uuid or linked_code:
+                        exists = check_internal_camera_exists_sync(
+                            camera_id=linked_uuid,
+                            code=linked_code,
+                        )
+                        if exists is False:
+                            logger.info(
+                                "[%s] Stopping orphaned unmanaged session (camera deleted from DB)",
+                                cid,
+                            )
+                            self.manager.stop_session(cid)
+                            self._known_db_camera_codes.discard(cid)
 
             # 4b. Nếu max_sessions động vừa bị giảm thấp hơn số phiên đang chạy, cắt bớt phiên managed vượt ngưỡng
             after_cleanup = [
@@ -169,6 +205,37 @@ class CameraSyncManager:
                 target_fps = max(25.0, ai_fps)
                 roi_polygons = _extract_roi_polygons_from_config(cfg)
 
+                existing_session = self.manager.get_session(code)
+                rules = fetch_effective_rules_sync(
+                    camera_id=cam.get("id"),
+                    site_id=cam.get("siteId"),
+                )
+                if rules is not None:
+                    eff_no_helmet = bool(rules.enable_no_helmet)
+                    eff_no_vest = bool(rules.enable_no_vest)
+                    eff_restricted = bool(rules.enable_restricted_area)
+                    eff_confidence = float(rules.confidence)
+                    eff_confirm_helmet = float(rules.confirmation_s)
+                    eff_confirm_vest = float(rules.confirmation_s)
+                    eff_cooldown = float(rules.cooldown_s)
+                elif existing_session is not None:
+                    # Site Service tạm gián đoạn -> giữ nguyên cấu hình đang chạy, tuyệt đối không reset về mặc định
+                    eff_no_helmet = existing_session.enable_no_helmet
+                    eff_no_vest = existing_session.enable_no_vest
+                    eff_restricted = existing_session.enable_restricted_area
+                    eff_confidence = existing_session.confidence_threshold
+                    eff_confirm_helmet = existing_session.confirmation_duration_s
+                    eff_confirm_vest = existing_session.confirmation_duration_vest_s
+                    eff_cooldown = existing_session.cooldown_s
+                else:
+                    eff_no_helmet = True
+                    eff_no_vest = True
+                    eff_restricted = True
+                    eff_confidence = config.CONFIDENCE_THRESHOLD
+                    eff_confirm_helmet = float(config.CONFIRMATION_DURATION_HELMET_S)
+                    eff_confirm_vest = float(config.CONFIRMATION_DURATION_VEST_S)
+                    eff_cooldown = float(config.COOLDOWN_DURATION_S)
+
                 try:
                     self.manager.start_session(
                         camera_id=code,
@@ -178,9 +245,13 @@ class CameraSyncManager:
                         target_fps=target_fps,
                         ai_fps=ai_fps,
                         roi_polygons=roi_polygons,
-                        enable_no_helmet=True,
-                        enable_no_vest=True,
-                        enable_restricted_area=True,
+                        confirmation_duration_s=eff_confirm_helmet,
+                        confirmation_duration_vest_s=eff_confirm_vest,
+                        cooldown_s=eff_cooldown,
+                        confidence_threshold=eff_confidence,
+                        enable_no_helmet=eff_no_helmet,
+                        enable_no_vest=eff_no_vest,
+                        enable_restricted_area=eff_restricted,
                         enable_scene_cut=True,
                         dispatch_enabled=self.dispatch_enabled,
                         auto_reconnect=True,

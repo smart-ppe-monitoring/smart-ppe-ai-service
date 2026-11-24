@@ -10,6 +10,8 @@ from app import config
 from app.constants import (
     HTTP_SAFETY_RULES_DEFAULT,
     HTTP_SAFETY_RULES_EFFECTIVE,
+    HTTP_SAFETY_RULES_INTERNAL_DEFAULT,
+    HTTP_SAFETY_RULES_INTERNAL_EFFECTIVE,
     DEFAULT_CONFIDENCE_THRESHOLD,
     DEFAULT_CONFIRMATION_DURATION_S,
     DEFAULT_COOLDOWN_DURATION_S,
@@ -56,56 +58,130 @@ _FALLBACK = SafetyRulesConfig(
 )
 
 
+def _parse_safety_rules_payload(data: dict) -> SafetyRulesConfig:
+    rules_dict = data.get("rules") if isinstance(data.get("rules"), dict) else {}
+    model_version = data.get("modelVersion") if isinstance(data.get("modelVersion"), dict) else {}
+    model_path = (
+        model_version.get("modelPath")
+        or data.get("modelVersionId")
+        or rules_dict.get("modelVersionId")
+    )
+    return SafetyRulesConfig(
+        confidence=float(data.get("confidenceThreshold", DEFAULT_CONFIDENCE_THRESHOLD)),
+        confirmation_s=float(data.get("confirmationDuration", DEFAULT_CONFIRMATION_DURATION_S)),
+        cooldown_s=int(data.get("cooldownDuration", DEFAULT_COOLDOWN_DURATION_S)),
+        enable_no_helmet=bool(data.get("enableNoHelmet", rules_dict.get("enableNoHelmet", True))),
+        enable_no_vest=bool(data.get("enableNoVest", rules_dict.get("enableNoVest", True))),
+        enable_restricted_area=bool(data.get("enableRestrictedArea", rules_dict.get("enableRestrictedArea", False))),
+        model_path=model_path,
+    )
+
+
 async def fetch_system_default_rules() -> SafetyRulesConfig:
     """
-    GET /api/v1/safety-rules/system-default
-    Falls back to DEFAULT_* constants if Backend is unreachable.
+    GET {SITE_SERVICE_URL}/api/v1/safety-rules/internal/system-default
+    Falls back to DEFAULT_* constants if Site Service is unreachable.
     """
-    url = f"{config.BACKEND_BASE_URL}{HTTP_SAFETY_RULES_DEFAULT}"
+    base_url = getattr(config, "SITE_SERVICE_URL", "http://localhost:8891").rstrip("/")
+    url = f"{base_url}{HTTP_SAFETY_RULES_INTERNAL_DEFAULT}"
+    headers = _get_auth_headers()
+    gw_secret = getattr(config, "GATEWAY_INTERNAL_SECRET", "")
+    if gw_secret:
+        headers["x-gateway-secret"] = gw_secret
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(url, headers=_get_auth_headers())
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(url, headers=headers)
             resp.raise_for_status()
             data = resp.json().get("data", {})
-            rules_dict = data.get("rules") if isinstance(data.get("rules"), dict) else {}
-            return SafetyRulesConfig(
-                confidence=float(data.get("confidenceThreshold", DEFAULT_CONFIDENCE_THRESHOLD)),
-                confirmation_s=float(data.get("confirmationDuration", DEFAULT_CONFIRMATION_DURATION_S)),
-                cooldown_s=int(data.get("cooldownDuration", DEFAULT_COOLDOWN_DURATION_S)),
-                enable_no_helmet=data.get("enableNoHelmet", rules_dict.get("enableNoHelmet", True)),
-                enable_no_vest=data.get("enableNoVest", rules_dict.get("enableNoVest", True)),
-                enable_restricted_area=data.get("enableRestrictedArea", rules_dict.get("enableRestrictedArea", False)),
-                model_path=data.get("modelVersionId", rules_dict.get("modelVersionId")),
-            )
+            if isinstance(data, dict):
+                return _parse_safety_rules_payload(data)
+            return _FALLBACK
     except Exception as exc:
-        logger.warning("Failed to fetch safety rules from Backend (%s). Using fallback defaults.", exc)
+        logger.warning("Failed to fetch safety rules from Site Service (%s). Using fallback defaults.", exc)
         return _FALLBACK
 
 
 async def fetch_effective_rules(camera_id: str, site_id: str) -> SafetyRulesConfig:
     """
-    GET /api/v1/safety-rules/effective?cameraId={cameraId}&siteId={siteId}
+    GET {SITE_SERVICE_URL}/api/v1/safety-rules/internal/effective?cameraId={cameraId}&siteId={siteId}
     Falls back to system-default if camera-specific config is unavailable.
     """
-    url = f"{config.BACKEND_BASE_URL}{HTTP_SAFETY_RULES_EFFECTIVE}"
+    base_url = getattr(config, "SITE_SERVICE_URL", "http://localhost:8891").rstrip("/")
+    url = f"{base_url}{HTTP_SAFETY_RULES_INTERNAL_EFFECTIVE}"
+    params = {}
+    if camera_id:
+        params["cameraId"] = camera_id
+    if site_id:
+        params["siteId"] = site_id
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(url, params={"cameraId": camera_id, "siteId": site_id}, headers=_get_auth_headers())
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(url, params=params, headers=_get_internal_m2m_headers())
             resp.raise_for_status()
             data = resp.json().get("data", {})
-            rules_dict = data.get("rules") if isinstance(data.get("rules"), dict) else {}
-            return SafetyRulesConfig(
-                confidence=float(data.get("confidenceThreshold", DEFAULT_CONFIDENCE_THRESHOLD)),
-                confirmation_s=float(data.get("confirmationDuration", DEFAULT_CONFIRMATION_DURATION_S)),
-                cooldown_s=int(data.get("cooldownDuration", DEFAULT_COOLDOWN_DURATION_S)),
-                enable_no_helmet=data.get("enableNoHelmet", rules_dict.get("enableNoHelmet", True)),
-                enable_no_vest=data.get("enableNoVest", rules_dict.get("enableNoVest", True)),
-                enable_restricted_area=data.get("enableRestrictedArea", rules_dict.get("enableRestrictedArea", False)),
-                model_path=data.get("modelVersionId", rules_dict.get("modelVersionId")),
-            )
+            if isinstance(data, dict):
+                return _parse_safety_rules_payload(data)
+            return _FALLBACK
     except Exception as exc:
         logger.warning("Effective rules fetch failed (%s). Falling back to system default.", exc)
         return await fetch_system_default_rules()
+
+
+def fetch_effective_rules_sync(
+    camera_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+) -> Optional[SafetyRulesConfig]:
+    """
+    GET {SITE_SERVICE_URL}/api/v1/safety-rules/internal/effective
+    Lấy cấu hình Safety Rules hiệu lực (Camera Override -> Site -> System Default) qua M2M.
+    Trả về None nếu Site Service chưa sẵn sàng để caller giữ nguyên cấu hình đang chạy thay vì đè mặc định.
+    """
+    if not camera_id and not site_id:
+        return None
+    base_url = getattr(config, "SITE_SERVICE_URL", "http://localhost:8891").rstrip("/")
+    url = f"{base_url}{HTTP_SAFETY_RULES_INTERNAL_EFFECTIVE}"
+    params: dict[str, str] = {}
+    if camera_id:
+        params["cameraId"] = str(camera_id)
+    if site_id:
+        params["siteId"] = str(site_id)
+    try:
+        with httpx.Client(timeout=2.5) as client:
+            resp = client.get(url, params=params, headers=_get_internal_m2m_headers())
+            resp.raise_for_status()
+            payload = resp.json()
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data, dict):
+                return None
+            return _parse_safety_rules_payload(data)
+    except Exception as exc:
+        logger.debug("Sync effective safety rules fetch skipped (%s): %s", camera_id or site_id, exc)
+        return None
+
+
+def check_internal_camera_exists_sync(
+    camera_id: Optional[str] = None,
+    code: Optional[str] = None,
+) -> Optional[bool]:
+    """
+    Kiểm tra camera có còn tồn tại trong Camera Service không qua M2M internal lookup.
+    Trả về True (200), False (404 - đã bị xóa khỏi DB), hoặc None (lỗi mạng/5xx để tránh dừng nhầm).
+    """
+    if not camera_id and not code:
+        return None
+    base_url = getattr(config, "CAMERA_SERVICE_URL", "http://localhost:8892").rstrip("/")
+    url = f"{base_url}/api/v1/cameras/internal/lookup"
+    params = {"id": str(camera_id)} if camera_id else {"code": str(code).upper()}
+    try:
+        with httpx.Client(timeout=2.5) as client:
+            resp = client.get(url, params=params, headers=_get_internal_m2m_headers())
+            if resp.status_code == 200:
+                return True
+            if resp.status_code == 404:
+                return False
+            return None
+    except Exception as exc:
+        logger.debug("Camera existence check skipped (%s): %s", code or camera_id, exc)
+        return None
 
 
 def fetch_internal_active_streams_sync(status: str = "ONLINE") -> Optional[list[dict]]:

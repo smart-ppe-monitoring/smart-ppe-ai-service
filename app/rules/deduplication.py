@@ -56,18 +56,25 @@ class ViolationDeduplicator:
 
     def __init__(self, camera_id=DEFAULT_CAMERA_ID, cooldown_s=COOLDOWN_DURATION_S,
                  id_switch_grace_s=ID_SWITCH_GRACE_S,
-                 id_switch_max_dist_ratio=ID_SWITCH_MAX_DIST_RATIO):
+                 id_switch_max_dist_ratio=ID_SWITCH_MAX_DIST_RATIO,
+                 camera_level_cooldown=False):
         self.camera_id = camera_id
         self.cooldown_s = float(cooldown_s)
         self.id_switch_grace_s = float(id_switch_grace_s)
         self.id_switch_max_dist_ratio = float(id_switch_max_dist_ratio)
+        self.camera_level_cooldown = bool(camera_level_cooldown)
         self._canonical = {}       # track_id -> canonical_person_id
         self._next_canonical = 0
         self._last_bbox = {}       # track_id -> bbox frame trước (để nhớ vị trí khi track mất)
         self._last_seen = {}       # track_id -> thời điểm cuối cùng còn thấy
         self._recently_lost = {}   # canonical_id -> (bbox cuối, thời điểm thấy lần cuối)
         self._last_emit = {}       # (canonical_id, violation_type) -> thời điểm phát gần nhất
+        self._last_camera_emit = {}  # violation_type -> thời điểm phát gần nhất khi lặp video EOF
         self._prev_ids = set()
+
+    def enable_camera_level_cooldown(self) -> None:
+        """Kích hoạt chống trùng theo (camera_id, violation_type) khi video mẫu lặp lại vòng mới."""
+        self.camera_level_cooldown = True
 
     def _update_links(self, persons, t):
         current_ids = set(persons.keys())
@@ -130,6 +137,10 @@ class ViolationDeduplicator:
             if self._last_emit[key] < cutoff:
                 self._last_emit.pop(key, None)
 
+        for vtype in list(self._last_camera_emit.keys()):
+            if self._last_camera_emit[vtype] < cutoff:
+                self._last_camera_emit.pop(vtype, None)
+
     def filter(self, confirmed_events, detections, t):
         """Lọc các event VI-06 đã xác nhận -> danh sách ViolationEvent được phát.
 
@@ -148,7 +159,12 @@ class ViolationDeduplicator:
             last = self._last_emit.get(key)
             if last is not None and t - last < self.cooldown_s:
                 continue  # trùng trong cooldown -> chặn
+            if self.camera_level_cooldown:
+                last_cam = self._last_camera_emit.get(c.violation_type)
+                if last_cam is not None and t - last_cam < self.cooldown_s:
+                    continue  # video mẫu lặp lại vòng mới vẫn trong cooldown -> chặn spam
             self._last_emit[key] = t
+            self._last_camera_emit[c.violation_type] = t
             out.append(ViolationEvent(
                 event_id=uuid.uuid4().hex[:12],
                 camera_id=self.camera_id,

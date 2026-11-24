@@ -31,7 +31,10 @@ from app.auth import (
     require_admin_or_permission,
     require_any_permission,
 )
-from app.clients.backend_client import lookup_internal_camera_sync
+from app.clients.backend_client import (
+    fetch_effective_rules_sync,
+    lookup_internal_camera_sync,
+)
 from app.events import flush_producer
 from app.live_api import (
     ConfirmSeconds,
@@ -79,6 +82,8 @@ class ProductionLiveStartRequest(BaseModel):
     roi_polygons: Optional[RoiPolygons] = None
     confirmation_duration_s: ConfirmSeconds = 2.0
     confirmation_duration_vest_s: Optional[ConfirmSeconds] = None
+    cooldown_s: Optional[Annotated[float, Field(ge=1.0, le=3600.0, allow_inf_nan=False)]] = None
+    confidence_threshold: Optional[Annotated[float, Field(ge=0.05, le=1.0, allow_inf_nan=False)]] = None
     enable_no_helmet: bool = True
     enable_no_vest: bool = True
     enable_restricted_area: bool = True
@@ -214,6 +219,13 @@ async def start_production_live(
     source_val: object = None
     managed_flag = False
     dispatch_flag = False
+    eff_confirm_s = req.confirmation_duration_s
+    eff_confirm_vest_s = req.confirmation_duration_vest_s
+    eff_cooldown_s = req.cooldown_s
+    eff_confidence = req.confidence_threshold
+    eff_no_helmet = req.enable_no_helmet
+    eff_no_vest = req.enable_no_vest
+    eff_restricted = req.enable_restricted_area
 
     if _needs_internal_camera_lookup(req.source):
         cam = await asyncio.to_thread(
@@ -239,6 +251,20 @@ async def start_production_live(
             resolved_roi = _extract_roi_polygons_from_config(cam.get("config"))
         managed_flag = bool(resolved_site_id)
         dispatch_flag = LIVE_DISPATCH_ENABLED
+
+        rules = await asyncio.to_thread(
+            fetch_effective_rules_sync,
+            resolved_cam_uuid,
+            resolved_site_id,
+        )
+        if rules is not None:
+            eff_confirm_s = float(rules.confirmation_s)
+            eff_confirm_vest_s = float(rules.confirmation_s)
+            eff_cooldown_s = float(rules.cooldown_s)
+            eff_confidence = float(rules.confidence)
+            eff_no_helmet = bool(rules.enable_no_helmet)
+            eff_no_vest = bool(rules.enable_no_vest)
+            eff_restricted = bool(rules.enable_restricted_area)
     else:
         existing_sess = live_engine_manager.get_session(req.camera_id)
         if existing_sess is not None and not can_access_live_session(existing_sess, auth):
@@ -267,17 +293,21 @@ async def start_production_live(
             target_fps=req.target_fps,
             ai_fps=req.ai_fps,
             roi_polygons=resolved_roi,
-            confirmation_duration_s=req.confirmation_duration_s,
-            confirmation_duration_vest_s=req.confirmation_duration_vest_s,
-            enable_no_helmet=req.enable_no_helmet,
-            enable_no_vest=req.enable_no_vest,
-            enable_restricted_area=req.enable_restricted_area,
+            confirmation_duration_s=eff_confirm_s,
+            confirmation_duration_vest_s=eff_confirm_vest_s,
+            cooldown_s=eff_cooldown_s,
+            confidence_threshold=eff_confidence,
+            enable_no_helmet=eff_no_helmet,
+            enable_no_vest=eff_no_vest,
+            enable_restricted_area=eff_restricted,
             enable_scene_cut=req.enable_scene_cut,
             dispatch_enabled=dispatch_flag,
             auto_reconnect=req.auto_reconnect,
             loop_on_eof=req.loop_on_eof,
             managed=managed_flag,
         )
+        if not managed_flag and req.camera_uuid:
+            session._sync_camera_uuid = str(req.camera_uuid)
         session.owner_user_id = auth.user_id
         session.owner_site_id = resolved_site_id
     except LiveSessionLimitError as e:

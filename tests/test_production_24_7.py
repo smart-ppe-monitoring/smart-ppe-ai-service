@@ -177,6 +177,7 @@ def test_camera_sync_manager_starts_more_than_4_cameras_with_dynamic_limit():
 
     with patch("app.live_sync.fetch_dynamic_live_max_sessions_sync", return_value=10), \
          patch("app.live_sync.fetch_internal_active_streams_sync", return_value=fake_cameras), \
+         patch("app.live_sync.fetch_effective_rules_sync", return_value=None), \
          patch("app.live_engine.VideoReader"), \
          patch("app.live_engine.Detector"):
         status = sync_mgr.sync_once()
@@ -196,7 +197,8 @@ def test_camera_sync_manager_starts_more_than_4_cameras_with_dynamic_limit():
 
         # Turn off CAM-06 (no longer returned as ONLINE), should stop CAM-06 cleanly
         mgr.start_session(camera_id="MANUAL-CAM", source="0", managed=False)
-        with patch("app.live_sync.fetch_internal_active_streams_sync", return_value=fake_cameras[:5]):
+        with patch("app.live_sync.fetch_internal_active_streams_sync", return_value=fake_cameras[:5]), \
+             patch("app.live_sync.fetch_effective_rules_sync", return_value=None):
             sync_mgr.sync_once()
 
         remaining_ids = {s["camera_id"] for s in mgr.list_sessions()}
@@ -568,12 +570,14 @@ def test_sync_once_trims_excess_managed_sessions_when_limit_shrinks():
         try:
             with patch("app.live_sync.fetch_dynamic_live_max_sessions_sync", return_value=4), \
                  patch("app.live_sync.fetch_internal_active_streams_sync", return_value=fake_cameras), \
+                 patch("app.live_sync.fetch_effective_rules_sync", return_value=None), \
                  patch("app.live_sync.pending_count", return_value=0):
                 st1 = sync_mgr.sync_once()
                 assert st1["last_synced_count"] == 4
 
             with patch("app.live_sync.fetch_dynamic_live_max_sessions_sync", return_value=2), \
                  patch("app.live_sync.fetch_internal_active_streams_sync", return_value=fake_cameras), \
+                 patch("app.live_sync.fetch_effective_rules_sync", return_value=None), \
                  patch("app.live_sync.pending_count", return_value=0):
                 st2 = sync_mgr.sync_once()
                 assert st2["max_sessions"] == 2
@@ -600,3 +604,210 @@ def test_live_dispatch_default_ignores_test_ui_env(monkeypatch):
         monkeypatch.setenv("LIVE_DISPATCH_ENABLED", "false")
         ns_disabled = runpy.run_path(config_path)
         assert ns_disabled["LIVE_DISPATCH_DEFAULT"] is False
+
+
+def test_sync_once_applies_dynamic_safety_rules_and_preserves_on_outage():
+    from app.clients.backend_client import SafetyRulesConfig
+
+    mgr = LiveEngineManager(max_sessions=4)
+    sync_mgr = CameraSyncManager(manager=mgr, dispatch_enabled=False, sync_interval_s=15.0)
+    site_uuid = "0199a001-0000-7000-8000-0000000000aa"
+    cam_uuid = "0199a001-0000-7000-8000-0000000000bb"
+    fake_cameras = [
+        {
+            "id": cam_uuid,
+            "siteId": site_uuid,
+            "code": "CAM-RULES-1",
+            "streamUrl": "rtsp://u:p@10.0.0.50/s",
+            "config": {"captureFps": 10},
+        }
+    ]
+    custom_rules = SafetyRulesConfig(
+        confidence=0.65,
+        confirmation_s=10.0,
+        cooldown_s=120,
+        enable_no_helmet=True,
+        enable_no_vest=False,
+        enable_restricted_area=False,
+    )
+
+    with patch("app.live_engine.VideoReader"), patch("app.live_engine.Detector"):
+        try:
+            with patch("app.live_sync.fetch_dynamic_live_max_sessions_sync", return_value=4), \
+                 patch("app.live_sync.fetch_internal_active_streams_sync", return_value=fake_cameras), \
+                 patch("app.live_sync.fetch_effective_rules_sync", return_value=custom_rules), \
+                 patch("app.live_sync.pending_count", return_value=0):
+                sync_mgr.sync_once()
+
+            sess = mgr.get_session("CAM-RULES-1")
+            assert sess is not None
+            assert sess.enable_no_helmet is True
+            assert sess.enable_no_vest is False
+            assert sess.enable_restricted_area is False
+            assert sess.confidence_threshold == 0.65
+            assert sess.confirmation_duration_s == 10.0
+            assert sess.confirmation_duration_vest_s == 10.0
+            assert sess.cooldown_s == 120.0
+
+            # Site Service temporarily unreachable (returns None) -> MUST keep existing config, NOT overwrite with defaults
+            with patch("app.live_sync.fetch_dynamic_live_max_sessions_sync", return_value=4), \
+                 patch("app.live_sync.fetch_internal_active_streams_sync", return_value=fake_cameras), \
+                 patch("app.live_sync.fetch_effective_rules_sync", return_value=None), \
+                 patch("app.live_sync.pending_count", return_value=0):
+                sync_mgr.sync_once()
+
+            sess_after = mgr.get_session("CAM-RULES-1")
+            assert sess_after is not None
+            assert sess_after.enable_no_vest is False
+            assert sess_after.enable_restricted_area is False
+            assert sess_after.confidence_threshold == 0.65
+            assert sess_after.confirmation_duration_s == 10.0
+            assert sess_after.cooldown_s == 120.0
+        finally:
+            mgr.stop_all()
+
+
+def test_loop_on_eof_uses_monotonic_timestamps_and_suppresses_duplicate_spam():
+    from types import SimpleNamespace
+    from app.rules.deduplication import ViolationDeduplicator
+    from app.constants import VIOLATION_NO_HELMET
+    from app.detection.adapter import PERSON
+
+    # 1. Verify ViolationDeduplicator camera-level cooldown across EOF loops & track ID changes
+    dedup = ViolationDeduplicator(camera_id="CAM-LOOP", cooldown_s=120.0, camera_level_cooldown=False)
+    confirmed = [
+        SimpleNamespace(
+            person_track_id=1,
+            violation_type=VIOLATION_NO_HELMET,
+            start_t=0.0,
+            confirmed_t=2.0,
+            duration_s=2.0,
+        )
+    ]
+    det_loop1 = [SimpleNamespace(class_name=PERSON, track_id=1, bbox=(10, 10, 80, 200))]
+    ev1 = dedup.filter(confirmed, det_loop1, t=2.0)
+    assert len(ev1) == 1
+
+    # Simulate EOF loop restart: new track_id=99 at different bbox, time advanced monotonically to 14.0s
+    dedup.enable_camera_level_cooldown()
+    confirmed_loop2 = [
+        SimpleNamespace(
+            person_track_id=99,
+            violation_type=VIOLATION_NO_HELMET,
+            start_t=12.0,
+            confirmed_t=14.0,
+            duration_s=2.0,
+        )
+    ]
+    det_loop2 = [SimpleNamespace(class_name=PERSON, track_id=99, bbox=(400, 10, 470, 200))]
+    ev2 = dedup.filter(confirmed_loop2, det_loop2, t=14.0)
+    assert len(ev2) == 0, "Duplicate violation within cooldown across EOF loop must be suppressed"
+
+    # After cooldown expires (t=125.0s > 2.0 + 120.0), alert is allowed again
+    ev3 = dedup.filter(confirmed_loop2, det_loop2, t=125.0)
+    assert len(ev3) == 1
+
+    # 2. Verify LiveStreamSession._run_loop preserves monotonic t_frame_s across VideoReader EOF restarts
+    class FakeLoopReader:
+        calls = 0
+
+        def __init__(self, _src):
+            FakeLoopReader.calls += 1
+            self.run_idx = FakeLoopReader.calls
+            self.fps = 10.0
+            self.original_source = "sample.mp4"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def release(self):
+            pass
+
+        def __iter__(self):
+            for idx in (1, 2, 3):
+                yield idx, np.zeros((100, 100, 3), dtype=np.uint8)
+
+    recorded_t_values: list[float] = []
+    sess = LiveStreamSession(
+        camera_id="CAM-MONO",
+        source="sample.mp4",
+        target_fps=10.0,
+        ai_fps=10.0,
+        cooldown_s=120.0,
+        enable_scene_cut=False,
+        dispatch_enabled=False,
+        loop_on_eof=True,
+    )
+
+    def fake_step(frame_num, frame, t_frame_s, detector, confirmation, dedup_obj, ai_fps_window):
+        recorded_t_values.append(t_frame_s)
+        if len(recorded_t_values) >= 6:
+            sess._stop_requested.set()
+
+    with patch("app.live_engine.VideoReader", FakeLoopReader), \
+         patch("app.live_engine.Detector"), \
+         patch.object(sess, "_process_ai_step", side_effect=fake_step):
+        sess._run_loop()
+
+    assert len(recorded_t_values) == 6
+    assert recorded_t_values[:3] == [0.0, 0.1, 0.2]
+    assert all(recorded_t_values[i] > recorded_t_values[i - 1] for i in range(1, len(recorded_t_values)))
+
+
+def test_sync_once_stops_orphaned_unmanaged_session_when_deleted_from_db():
+    mgr = LiveEngineManager(max_sessions=6)
+    sync_mgr = CameraSyncManager(manager=mgr, dispatch_enabled=False, sync_interval_s=15.0)
+    deleted_uuid = "0199a001-0000-7000-8000-0000000000dd"
+    network_uuid = "0199a001-0000-7000-8000-0000000000ee"
+
+    with patch("app.live_engine.VideoReader"), patch("app.live_engine.Detector"):
+        try:
+            # 1. Session started manually (managed=False) linked to a DB camera via _sync_camera_uuid
+            orphan = mgr.start_session(
+                camera_id="CAM-DELETED",
+                source="0",
+                managed=False,
+                loop_on_eof=True,
+            )
+            orphan._sync_camera_uuid = deleted_uuid
+
+            # 2. Session whose DB check hits transient network error (returns None) -> MUST NOT stop
+            transient = mgr.start_session(
+                camera_id="CAM-TRANSIENT",
+                source="0",
+                managed=False,
+                loop_on_eof=True,
+            )
+            transient._sync_camera_uuid = network_uuid
+
+            # 3. Pure sandbox session with no DB camera link -> MUST NOT check or stop
+            mgr.start_session(
+                camera_id="SANDBOX-LOCAL",
+                source="0",
+                managed=False,
+                loop_on_eof=True,
+            )
+
+            def fake_exists(camera_id=None, code=None):
+                if camera_id == deleted_uuid:
+                    return False
+                if camera_id == network_uuid:
+                    return None
+                return True
+
+            with patch("app.live_sync.fetch_dynamic_live_max_sessions_sync", return_value=6), \
+                 patch("app.live_sync.fetch_internal_active_streams_sync", return_value=[]), \
+                 patch("app.live_sync.check_internal_camera_exists_sync", side_effect=fake_exists) as mock_exists, \
+                 patch("app.live_sync.pending_count", return_value=0):
+                sync_mgr.sync_once()
+
+            remaining_ids = {s["camera_id"] for s in mgr.list_sessions()}
+            assert "CAM-DELETED" not in remaining_ids
+            assert "CAM-TRANSIENT" in remaining_ids
+            assert "SANDBOX-LOCAL" in remaining_ids
+            assert mock_exists.call_count == 2
+        finally:
+            mgr.stop_all()

@@ -270,7 +270,7 @@ class LiveStreamSession:
             MIN_CONFIRMATION_DURATION_S,
             float(confirmation_duration_vest_s if confirmation_duration_vest_s is not None else config.CONFIRMATION_DURATION_VEST_S)
         )
-        self.cooldown_s = float(cooldown_s)
+        self.cooldown_s = max(1.0, float(cooldown_s))
         self.confidence_threshold = float(
             confidence_threshold if confidence_threshold is not None else config.CONFIDENCE_THRESHOLD
         )
@@ -284,6 +284,7 @@ class LiveStreamSession:
         self.auto_reconnect = bool(auto_reconnect)
         self.loop_on_eof = bool(loop_on_eof)
         self.managed = bool(managed)
+        self._sync_camera_uuid: Optional[str] = None
         self.reconnect_count = 0
         self.last_frame_at: Optional[float] = None
 
@@ -351,6 +352,8 @@ class LiveStreamSession:
         enable_scene_cut: Optional[bool] = None,
         confirmation_duration_s: Optional[float] = None,
         confirmation_duration_vest_s: Optional[float] = None,
+        cooldown_s: Optional[float] = None,
+        confidence_threshold: Optional[float] = None,
         dispatch_enabled: Optional[bool] = None,
         auto_reconnect: Optional[bool] = None,
         loop_on_eof: Optional[bool] = None,
@@ -377,6 +380,10 @@ class LiveStreamSession:
                 self.confirmation_duration_s = max(MIN_CONFIRMATION_DURATION_S, float(confirmation_duration_s))
             if confirmation_duration_vest_s is not None:
                 self.confirmation_duration_vest_s = max(MIN_CONFIRMATION_DURATION_S, float(confirmation_duration_vest_s))
+            if cooldown_s is not None:
+                self.cooldown_s = max(1.0, float(cooldown_s))
+            if confidence_threshold is not None:
+                self.confidence_threshold = max(0.05, min(1.0, float(confidence_threshold)))
             if dispatch_enabled is not None:
                 self.dispatch_enabled = bool(dispatch_enabled)
             if auto_reconnect is not None:
@@ -384,8 +391,9 @@ class LiveStreamSession:
             if loop_on_eof is not None:
                 self.loop_on_eof = bool(loop_on_eof)
         logger.info(
-            "[%s] Config updated: target_fps=%.1f, ai_fps=%.1f, helmet=%s, vest=%s, restricted=%s, scene_cut=%s",
+            "[%s] Config updated: target_fps=%.1f, ai_fps=%.1f, conf=%.2f, cooldown=%.1fs, helmet=%s, vest=%s, restricted=%s, scene_cut=%s",
             self.camera_id, self.target_fps, self.ai_fps,
+            self.confidence_threshold, self.cooldown_s,
             self.enable_no_helmet, self.enable_no_vest, self.enable_restricted_area, self.enable_scene_cut
         )
 
@@ -745,6 +753,11 @@ class LiveStreamSession:
         """Thực thi 1 bước suy luận AI (YOLO + Association + Safety Rules + Confirmation + Evidence)."""
         frame_h, frame_w = frame.shape[:2]
 
+        # Đồng bộ nóng ngưỡng tin cậy & thời gian cooldown nếu Safety Rules vừa được cập nhật
+        if hasattr(detector, "conf"):
+            detector.conf = self.confidence_threshold
+        dedup.cooldown_s = float(self.cooldown_s)
+
         # Bước 2a: Detection + Tracking (YOLO + ByteTrack)
         t_infer_start = time.perf_counter()
         detections = detector.detect(frame)
@@ -937,6 +950,8 @@ class LiveStreamSession:
 
         reconnect_attempt = 0
         fatal_error = False
+        loop_time_offset_s = 0.0
+        last_t_frame_s = 0.0
 
         try:
             while not self._stop_requested.is_set():
@@ -1043,7 +1058,8 @@ class LiveStreamSession:
                             if should_run_ai:
                                 last_ai_submit_t = now_perf
                                 eff_fps = self.target_fps if needs_pacing else (reader.fps if reader.fps > 0 else 25.0)
-                                t_frame_s = round((frame_num - 1) / eff_fps, 3)
+                                t_frame_s = round(loop_time_offset_s + (frame_num - 1) / eff_fps, 3)
+                                last_t_frame_s = max(last_t_frame_s, t_frame_s)
                                 if run_ai_inline:
                                     self._process_ai_step(
                                         frame_num, frame, t_frame_s, detector, confirmation, dedup, ai_fps_window
@@ -1073,7 +1089,16 @@ class LiveStreamSession:
                 self._track_last_seen.clear()
 
                 if not is_live_cctv and self.loop_on_eof:
-                    logger.info("[%s] Video EOF reached, restarting 24/7 loop", self.camera_id)
+                    loop_time_offset_s = round(
+                        last_t_frame_s + (1.0 / max(1.0, self.target_fps)),
+                        3,
+                    )
+                    dedup.enable_camera_level_cooldown()
+                    logger.info(
+                        "[%s] Video EOF reached, restarting 24/7 loop (offset=%.3fs)",
+                        self.camera_id,
+                        loop_time_offset_s,
+                    )
                     self._stop_requested.wait(0.2)
                     continue
 
@@ -1233,6 +1258,8 @@ class LiveEngineManager:
         roi_polygons: Optional[List[Any]] = None,
         confirmation_duration_s: float = 2.0,
         confirmation_duration_vest_s: Optional[float] = None,
+        cooldown_s: Optional[float] = None,
+        confidence_threshold: Optional[float] = None,
         enable_no_helmet: bool = True,
         enable_no_vest: bool = True,
         enable_restricted_area: bool = True,
@@ -1258,6 +1285,8 @@ class LiveEngineManager:
                         enable_scene_cut=enable_scene_cut,
                         confirmation_duration_s=confirmation_duration_s,
                         confirmation_duration_vest_s=confirmation_duration_vest_s,
+                        cooldown_s=cooldown_s,
+                        confidence_threshold=confidence_threshold,
                         dispatch_enabled=dispatch_enabled,
                         auto_reconnect=auto_reconnect,
                         loop_on_eof=loop_on_eof,
@@ -1290,6 +1319,8 @@ class LiveEngineManager:
                 roi_polygons=roi_polygons,
                 confirmation_duration_s=confirmation_duration_s,
                 confirmation_duration_vest_s=confirmation_duration_vest_s,
+                cooldown_s=cooldown_s if cooldown_s is not None else config.COOLDOWN_DURATION_S,
+                confidence_threshold=confidence_threshold,
                 enable_no_helmet=enable_no_helmet,
                 enable_no_vest=enable_no_vest,
                 enable_restricted_area=enable_restricted_area,

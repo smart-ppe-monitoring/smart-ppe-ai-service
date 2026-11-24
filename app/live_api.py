@@ -80,6 +80,8 @@ class LiveConfigUpdateRequest(BaseModel):
     enable_scene_cut: Optional[bool] = None
     confirmation_duration_s: Optional[ConfirmSeconds] = None
     confirmation_duration_vest_s: Optional[ConfirmSeconds] = None
+    cooldown_s: Optional[Annotated[float, Field(ge=1.0, le=3600.0, allow_inf_nan=False)]] = None
+    confidence_threshold: Optional[Annotated[float, Field(ge=0.05, le=1.0, allow_inf_nan=False)]] = None
 
 
 _BLOCKED_STREAM_HOSTS = {
@@ -377,6 +379,8 @@ def create_common_live_router(
             enable_scene_cut=req.enable_scene_cut,
             confirmation_duration_s=req.confirmation_duration_s,
             confirmation_duration_vest_s=req.confirmation_duration_vest_s,
+            cooldown_s=req.cooldown_s,
+            confidence_threshold=req.confidence_threshold,
         )
         return {
             "status": "updated",

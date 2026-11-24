@@ -23,6 +23,7 @@ load_dotenv()
 # ─── Backend API ──────────────────────────────────────────────────────────────
 BACKEND_BASE_URL: str = os.getenv("BACKEND_BASE_URL", os.getenv("INCIDENT_SERVICE_URL", "http://localhost:8893"))
 CAMERA_SERVICE_URL: str = os.getenv("CAMERA_SERVICE_URL", "http://localhost:8892")
+SITE_SERVICE_URL: str = os.getenv("SITE_SERVICE_URL", "http://localhost:8891")
 IDENTITY_SERVICE_URL: str = os.getenv("IDENTITY_SERVICE_URL", "http://localhost:9999")
 GATEWAY_INTERNAL_SECRET: str = os.getenv("GATEWAY_INTERNAL_SECRET", "")
 INTERNAL_SERVICE_TOKEN: str = os.getenv("INTERNAL_SERVICE_TOKEN", os.getenv("AI_SERVICE_TOKEN", ""))

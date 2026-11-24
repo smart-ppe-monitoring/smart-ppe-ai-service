@@ -12,6 +12,8 @@ HTTP_EVENTS_ENDPOINT = "/api/v1/integration/ai-vision/events"
 HTTP_BATCH_ENDPOINT = "/api/v1/integration/ai-vision/events/batch"
 HTTP_SAFETY_RULES_DEFAULT = "/api/v1/safety-rules/system-default"
 HTTP_SAFETY_RULES_EFFECTIVE = "/api/v1/safety-rules/effective"
+HTTP_SAFETY_RULES_INTERNAL_DEFAULT = "/api/v1/safety-rules/internal/system-default"
+HTTP_SAFETY_RULES_INTERNAL_EFFECTIVE = "/api/v1/safety-rules/internal/effective"
 
 # ─── MinIO / Object Storage ───────────────────────────────────────────────────
 MINIO_BUCKET = "ppe-evidences"
