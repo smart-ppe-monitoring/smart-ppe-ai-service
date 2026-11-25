@@ -233,7 +233,12 @@ def run_pipeline(
 ) -> int:
     """Run the video intelligence pipeline for a single source stream/file."""
     actual_source = source or config.VIDEO_SOURCE
-    confirmation_duration = rules.confirmation_s if rules else config.CONFIRMATION_DURATION_S
+    helmet_confirmation_duration = (
+        rules.helmet_confirmation_s if rules else config.CONFIRMATION_DURATION_HELMET_S
+    )
+    vest_confirmation_duration = (
+        rules.vest_confirmation_s if rules else config.CONFIRMATION_DURATION_VEST_S
+    )
     cooldown_duration = rules.cooldown_s if rules else config.COOLDOWN_DURATION_S
     conf_threshold = rules.confidence if rules else config.CONFIDENCE_THRESHOLD
 
@@ -265,7 +270,14 @@ def run_pipeline(
     n_frames = 0
     t_detect = 0.0
 
-    confirmation = ViolationConfirmation(duration_s=confirmation_duration)
+    confirmation = ViolationConfirmation(
+        duration_s=helmet_confirmation_duration,
+        duration_map={
+            VIOLATION_NO_HELMET: helmet_confirmation_duration,
+            VIOLATION_NO_VEST: vest_confirmation_duration,
+            VIOLATION_RESTRICTED_AREA: helmet_confirmation_duration,
+        },
+    )
     dedup = ViolationDeduplicator(cooldown_s=cooldown_duration)
 
     # SEC-30: Scene cut detection resets tracking & confirmation states.

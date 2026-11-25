@@ -624,7 +624,8 @@ def test_sync_once_applies_dynamic_safety_rules_and_preserves_on_outage():
     ]
     custom_rules = SafetyRulesConfig(
         confidence=0.65,
-        confirmation_s=10.0,
+        helmet_confirmation_s=10.0,
+        vest_confirmation_s=14.0,
         cooldown_s=120,
         enable_no_helmet=True,
         enable_no_vest=False,
@@ -646,7 +647,7 @@ def test_sync_once_applies_dynamic_safety_rules_and_preserves_on_outage():
             assert sess.enable_restricted_area is False
             assert sess.confidence_threshold == 0.65
             assert sess.confirmation_duration_s == 10.0
-            assert sess.confirmation_duration_vest_s == 10.0
+            assert sess.confirmation_duration_vest_s == 14.0
             assert sess.cooldown_s == 120.0
 
             # Site Service temporarily unreachable (returns None) -> MUST keep existing config, NOT overwrite with defaults
@@ -662,6 +663,7 @@ def test_sync_once_applies_dynamic_safety_rules_and_preserves_on_outage():
             assert sess_after.enable_restricted_area is False
             assert sess_after.confidence_threshold == 0.65
             assert sess_after.confirmation_duration_s == 10.0
+            assert sess_after.confirmation_duration_vest_s == 14.0
             assert sess_after.cooldown_s == 120.0
         finally:
             mgr.stop_all()

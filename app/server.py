@@ -258,8 +258,8 @@ async def start_production_live(
             resolved_site_id,
         )
         if rules is not None:
-            eff_confirm_s = float(rules.confirmation_s)
-            eff_confirm_vest_s = float(rules.confirmation_s)
+            eff_confirm_s = float(rules.helmet_confirmation_s)
+            eff_confirm_vest_s = float(rules.vest_confirmation_s)
             eff_cooldown_s = float(rules.cooldown_s)
             eff_confidence = float(rules.confidence)
             eff_no_helmet = bool(rules.enable_no_helmet)

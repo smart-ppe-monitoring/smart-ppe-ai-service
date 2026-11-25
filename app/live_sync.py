@@ -215,8 +215,8 @@ class CameraSyncManager:
                     eff_no_vest = bool(rules.enable_no_vest)
                     eff_restricted = bool(rules.enable_restricted_area)
                     eff_confidence = float(rules.confidence)
-                    eff_confirm_helmet = float(rules.confirmation_s)
-                    eff_confirm_vest = float(rules.confirmation_s)
+                    eff_confirm_helmet = float(rules.helmet_confirmation_s)
+                    eff_confirm_vest = float(rules.vest_confirmation_s)
                     eff_cooldown = float(rules.cooldown_s)
                 elif existing_session is not None:
                     # Site Service tạm gián đoạn -> giữ nguyên cấu hình đang chạy, tuyệt đối không reset về mặc định

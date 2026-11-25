@@ -14,6 +14,8 @@ from app.constants import (
     HTTP_SAFETY_RULES_INTERNAL_EFFECTIVE,
     DEFAULT_CONFIDENCE_THRESHOLD,
     DEFAULT_CONFIRMATION_DURATION_S,
+    DEFAULT_CONFIRMATION_DURATION_HELMET_S,
+    DEFAULT_CONFIRMATION_DURATION_VEST_S,
     DEFAULT_COOLDOWN_DURATION_S,
 )
 
@@ -39,11 +41,36 @@ def _get_internal_m2m_headers() -> dict[str, str]:
 
 
 class SafetyRulesConfig:
-    def __init__(self, confidence: float, confirmation_s: float, cooldown_s: int,
-                 enable_no_helmet: bool = True, enable_no_vest: bool = True,
-                 enable_restricted_area: bool = False, model_path: Optional[str] = None):
+    def __init__(
+        self,
+        confidence: float,
+        confirmation_s: Optional[float] = None,
+        cooldown_s: int = DEFAULT_COOLDOWN_DURATION_S,
+        enable_no_helmet: bool = True,
+        enable_no_vest: bool = True,
+        enable_restricted_area: bool = False,
+        model_path: Optional[str] = None,
+        helmet_confirmation_s: Optional[float] = None,
+        vest_confirmation_s: Optional[float] = None,
+    ):
+        resolved_helmet = (
+            helmet_confirmation_s
+            if helmet_confirmation_s is not None
+            else (
+                confirmation_s
+                if confirmation_s is not None
+                else DEFAULT_CONFIRMATION_DURATION_HELMET_S
+            )
+        )
+        resolved_vest = (
+            vest_confirmation_s
+            if vest_confirmation_s is not None
+            else DEFAULT_CONFIRMATION_DURATION_VEST_S
+        )
         self.confidence = float(confidence)
-        self.confirmation_s = float(confirmation_s)
+        self.helmet_confirmation_s = float(resolved_helmet)
+        self.confirmation_s = self.helmet_confirmation_s  # Backward-compatible alias
+        self.vest_confirmation_s = float(resolved_vest)
         self.cooldown_s = int(cooldown_s)
         self.enable_no_helmet = enable_no_helmet
         self.enable_no_vest = enable_no_vest
@@ -53,7 +80,8 @@ class SafetyRulesConfig:
 
 _FALLBACK = SafetyRulesConfig(
     confidence=DEFAULT_CONFIDENCE_THRESHOLD,
-    confirmation_s=float(DEFAULT_CONFIRMATION_DURATION_S),
+    helmet_confirmation_s=float(DEFAULT_CONFIRMATION_DURATION_HELMET_S),
+    vest_confirmation_s=float(DEFAULT_CONFIRMATION_DURATION_VEST_S),
     cooldown_s=DEFAULT_COOLDOWN_DURATION_S,
 )
 
@@ -66,9 +94,20 @@ def _parse_safety_rules_payload(data: dict) -> SafetyRulesConfig:
         or data.get("modelVersionId")
         or rules_dict.get("modelVersionId")
     )
+    raw_helmet = data.get("helmetConfirmationDuration")
+    if raw_helmet is None:
+        raw_helmet = data.get("confirmationDuration")
+    if raw_helmet is None:
+        raw_helmet = DEFAULT_CONFIRMATION_DURATION_HELMET_S
+
+    raw_vest = data.get("vestConfirmationDuration")
+    if raw_vest is None:
+        raw_vest = DEFAULT_CONFIRMATION_DURATION_VEST_S
+
     return SafetyRulesConfig(
         confidence=float(data.get("confidenceThreshold", DEFAULT_CONFIDENCE_THRESHOLD)),
-        confirmation_s=float(data.get("confirmationDuration", DEFAULT_CONFIRMATION_DURATION_S)),
+        helmet_confirmation_s=float(raw_helmet),
+        vest_confirmation_s=float(raw_vest),
         cooldown_s=int(data.get("cooldownDuration", DEFAULT_COOLDOWN_DURATION_S)),
         enable_no_helmet=bool(data.get("enableNoHelmet", rules_dict.get("enableNoHelmet", True))),
         enable_no_vest=bool(data.get("enableNoVest", rules_dict.get("enableNoVest", True))),
