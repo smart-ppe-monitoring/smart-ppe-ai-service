@@ -14,6 +14,19 @@ HTTP_SAFETY_RULES_DEFAULT = "/api/v1/safety-rules/system-default"
 HTTP_SAFETY_RULES_EFFECTIVE = "/api/v1/safety-rules/effective"
 HTTP_SAFETY_RULES_INTERNAL_DEFAULT = "/api/v1/safety-rules/internal/system-default"
 HTTP_SAFETY_RULES_INTERNAL_EFFECTIVE = "/api/v1/safety-rules/internal/effective"
+HTTP_REPORTING_INTERNAL_TELEMETRY = "/api/v1/statistics/internal/record-ai-performance"
+HTTP_REPORTING_INTERNAL_ACTIVE_MODEL = "/api/v1/ai-models/internal/active-version"
+
+# ─── Internal Events ─────────────────────────────────────────────────────────
+EVENT_AI_MODEL_DEPLOYED = "ppe.ai_model.deployed"
+
+# ─── Telemetry Limits & Defaults ─────────────────────────────────────────────
+DEFAULT_TELEMETRY_PUSH_INTERVAL_S: float = 30.0
+TELEMETRY_MAX_FPS: float = 240.0
+TELEMETRY_MAX_LATENCY_MS: float = 10000.0
+TELEMETRY_MAX_P95_LATENCY_MS: float = 60000.0
+TELEMETRY_MAX_E2E_ALERT_LATENCY_MS: float = 60000.0
+TELEMETRY_MAX_FRAME_COUNT: int = 1_000_000
 
 # ─── MinIO / Object Storage ───────────────────────────────────────────────────
 MINIO_BUCKET = "ppe-evidences"

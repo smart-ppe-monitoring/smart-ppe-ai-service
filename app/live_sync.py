@@ -12,15 +12,21 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import logging
+import os
+from pathlib import Path
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 from app import config
+from app.constants import EVENT_AI_MODEL_DEPLOYED
 from app.clients.backend_client import (
     check_internal_camera_exists_sync,
     fetch_dynamic_live_max_sessions_sync,
     fetch_effective_rules_sync,
+    fetch_internal_active_model_version_sync,
     fetch_internal_active_streams_sync,
+    push_ai_performance_telemetry_sync,
 )
 from app.events import flush_offline_buffer
 from app.events.offline_buffer import pending_count
@@ -28,7 +34,9 @@ from app.live_engine import (
     LiveEngineManager,
     LiveSessionLimitError,
     UUID_RE,
+    _normalize_model_path,
     live_engine_manager,
+    preload_detector,
 )
 from app.video.video_reader import mask_source
 
@@ -46,18 +54,62 @@ def _extract_roi_polygons_from_config(cfg: Optional[dict]) -> Optional[List[Any]
     return raw_roi
 
 
+def _resolve_safe_local_model_path(
+    raw_model_path: Optional[str],
+    models_dir: Path,
+) -> Optional[str]:
+    """Xác thực an toàn đường dẫn weights cục bộ trong models_dir (chặn traversal/URL bên ngoài)."""
+    if not raw_model_path or not isinstance(raw_model_path, str):
+        return None
+    normalized = raw_model_path.strip().replace("\\", "/")
+    if not normalized or ".." in normalized or "://" in normalized:
+        return None
+    if normalized.startswith("models/"):
+        normalized = normalized[len("models/"):]
+    if not normalized or normalized.startswith("/"):
+        return None
+    try:
+        base_dir = models_dir.resolve()
+        candidate = (base_dir / normalized).resolve()
+    except OSError:
+        return None
+    if (
+        not candidate.is_relative_to(base_dir)
+        or candidate.suffix.lower() not in (".pt", ".onnx")
+        or not candidate.is_file()
+    ):
+        return None
+    return str(candidate)
+
+
 class CameraSyncManager:
-    """Quản lý vòng đời tự động bật/tắt/đồng bộ các camera công trường ONLINE 24/7."""
+    """Quản lý vòng đời tự động bật/tắt/đồng bộ các camera công trường ONLINE 24/7 và đẩy telemetry AI."""
 
     def __init__(
         self,
         manager: LiveEngineManager = live_engine_manager,
         dispatch_enabled: bool = config.LIVE_DISPATCH_DEFAULT,
         sync_interval_s: float = config.AI_CAMERA_SYNC_INTERVAL_S,
+        telemetry_enabled: bool = config.AI_TELEMETRY_ENABLED,
+        telemetry_push_interval_s: float = config.AI_TELEMETRY_PUSH_INTERVAL_S,
+        models_dir: Optional[Path] = None,
+        enable_reporting_sync: Optional[bool] = None,
     ):
         self.manager = manager
         self.dispatch_enabled = bool(dispatch_enabled)
         self.sync_interval_s = max(5.0, float(sync_interval_s))
+        self.telemetry_enabled = bool(telemetry_enabled)
+        self.telemetry_push_interval_s = max(5.0, float(telemetry_push_interval_s))
+        self.models_dir = (
+            models_dir
+            if models_dir is not None
+            else (Path(__file__).resolve().parent.parent / "models")
+        )
+        self.enable_reporting_sync = (
+            bool(enable_reporting_sync)
+            if enable_reporting_sync is not None
+            else (not bool(os.getenv("PYTEST_CURRENT_TEST")))
+        )
         self._sync_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -70,6 +122,15 @@ class CameraSyncManager:
         self.dynamic_max_sessions: Optional[int] = None
         self._known_db_camera_codes: set[str] = set()
 
+        self.active_model_version_id: Optional[str] = None
+        self.active_model_version: Optional[str] = None
+        self.active_model_path: Optional[str] = None
+        self.last_model_sync_at: Optional[str] = None
+        self.last_telemetry_push_at: Optional[str] = None
+        self.last_telemetry_pushed_count: int = 0
+        self.last_telemetry_failed_count: int = 0
+        self._last_telemetry_monotonic: float = 0.0
+
     def get_status(self) -> Dict[str, Any]:
         return {
             "last_sync_at": self.last_sync_at,
@@ -80,7 +141,166 @@ class CameraSyncManager:
             "dynamic_max_sessions": self.dynamic_max_sessions,
             "max_sessions": self.manager.get_max_sessions(),
             "dispatch_enabled": self.dispatch_enabled,
+            "active_model_version_id": self.active_model_version_id,
+            "active_model_version": self.active_model_version,
+            "active_model_path": self.active_model_path,
+            "last_model_sync_at": self.last_model_sync_at,
+            "telemetry_enabled": self.telemetry_enabled,
+            "telemetry_push_interval_s": self.telemetry_push_interval_s,
+            "last_telemetry_push_at": self.last_telemetry_push_at,
+            "last_telemetry_pushed_count": self.last_telemetry_pushed_count,
+            "last_telemetry_failed_count": self.last_telemetry_failed_count,
         }
+
+    def apply_deployed_model_sync(
+        self,
+        *,
+        version_id: Optional[str] = None,
+        version: Optional[str] = None,
+        model_path: Optional[str] = None,
+        models_dir: Optional[Path] = None,
+        trigger: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Áp dụng thông tin phiên bản mô hình vừa deploy và hot-reload các phiên managed nếu weights thay đổi."""
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        target_models_dir = models_dir if models_dir is not None else self.models_dir
+
+        if version_id and UUID_RE.match(str(version_id)):
+            self.active_model_version_id = str(version_id)
+        if isinstance(version, str) and version.strip():
+            self.active_model_version = version.strip()
+        self.last_model_sync_at = now_iso
+
+        resolved_local_path = _resolve_safe_local_model_path(model_path, target_models_dir)
+        reloaded_sessions = 0
+
+        if resolved_local_path is not None:
+            self.active_model_path = resolved_local_path
+            if not os.getenv("PYTEST_CURRENT_TEST"):
+                threading.Thread(
+                    target=preload_detector,
+                    args=(resolved_local_path,),
+                    daemon=True,
+                    name="model-deploy-prewarm",
+                ).start()
+
+            for sess in self.manager.iter_sessions():
+                if self.active_model_version_id:
+                    sess.model_version_id = self.active_model_version_id
+                if (
+                    sess.managed
+                    and sess.status in ("initializing", "running", "reconnecting")
+                    and _normalize_model_path(sess.model_path) != _normalize_model_path(resolved_local_path)
+                ):
+                    try:
+                        self.manager.start_session(
+                            camera_id=sess.camera_id,
+                            camera_uuid=sess.camera_uuid,
+                            source=sess.source,
+                            site_id=sess.site_id,
+                            model_path=resolved_local_path,
+                            model_version_id=self.active_model_version_id,
+                            target_fps=sess.target_fps,
+                            ai_fps=sess.ai_fps,
+                            roi_polygons=sess.roi_polygons,
+                            confirmation_duration_s=sess.confirmation_duration_s,
+                            confirmation_duration_vest_s=sess.confirmation_duration_vest_s,
+                            cooldown_s=sess.cooldown_s,
+                            confidence_threshold=sess.confidence_threshold,
+                            enable_no_helmet=sess.enable_no_helmet,
+                            enable_no_vest=sess.enable_no_vest,
+                            enable_restricted_area=sess.enable_restricted_area,
+                            enable_scene_cut=sess.enable_scene_cut,
+                            dispatch_enabled=sess.dispatch_enabled,
+                            auto_reconnect=sess.auto_reconnect,
+                            loop_on_eof=sess.loop_on_eof,
+                            managed=sess.managed,
+                        )
+                        reloaded_sessions += 1
+                    except Exception as reload_err:
+                        logger.warning(
+                            "[%s] Failed hot-reloading deployed model '%s': %s",
+                            sess.camera_id,
+                            resolved_local_path,
+                            reload_err,
+                        )
+
+            logger.info(
+                "Applied deployed AI model sync (%s v%s, path=%s, reloaded=%d)",
+                self.active_model_version_id or "unknown",
+                self.active_model_version or "unknown",
+                Path(resolved_local_path).name,
+                reloaded_sessions,
+            )
+            return {
+                "applied": True,
+                "trigger": trigger or EVENT_AI_MODEL_DEPLOYED,
+                "version_id": self.active_model_version_id,
+                "version": self.active_model_version,
+                "model_path": resolved_local_path,
+                "reloaded_sessions": reloaded_sessions,
+                "reason": "model_reloaded",
+            }
+
+        for sess in self.manager.iter_sessions():
+            if self.active_model_version_id:
+                sess.model_version_id = self.active_model_version_id
+
+        return {
+            "applied": bool(self.active_model_version_id),
+            "trigger": trigger or EVENT_AI_MODEL_DEPLOYED,
+            "version_id": self.active_model_version_id,
+            "version": self.active_model_version,
+            "model_path": self.active_model_path,
+            "reloaded_sessions": 0,
+            "reason": "version_tracked_local_weights_unavailable",
+        }
+
+    def sync_active_model_once(self) -> Optional[Dict[str, Any]]:
+        """Truy vấn active model version từ Reporting Service và đồng bộ nội bộ."""
+        active = fetch_internal_active_model_version_sync()
+        if not active:
+            return None
+        return self.apply_deployed_model_sync(
+            version_id=active.get("id"),
+            version=active.get("version"),
+            model_path=active.get("modelPath"),
+            trigger="reporting_poll",
+        )
+
+    def flush_telemetry_once(self, force: bool = False) -> Dict[str, Any]:
+        """Thu thập telemetry thực tế theo từng camera và đẩy về Reporting Service định kỳ."""
+        if not self.telemetry_enabled:
+            return {"skipped": True, "reason": "telemetry_disabled", "pushed": 0, "failed": 0}
+
+        now_mono = time.monotonic()
+        if (
+            not force
+            and self._last_telemetry_monotonic > 0
+            and (now_mono - self._last_telemetry_monotonic) < self.telemetry_push_interval_s
+        ):
+            return {"skipped": True, "reason": "interval_not_elapsed", "pushed": 0, "failed": 0}
+
+        pushed = 0
+        failed = 0
+        for sess in self.manager.iter_sessions():
+            drained = sess.drain_telemetry_batch(
+                default_model_version_id=self.active_model_version_id,
+            )
+            if not drained:
+                continue
+            payload, rollback = drained
+            if push_ai_performance_telemetry_sync(payload):
+                pushed += 1
+            else:
+                sess.restore_telemetry_batch(rollback)
+                failed += 1
+
+        self._last_telemetry_monotonic = time.monotonic()
+        self.last_telemetry_push_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.last_telemetry_pushed_count = pushed
+        self.last_telemetry_failed_count = failed
+        return {"skipped": False, "pushed": pushed, "failed": failed}
 
     def sync_once(self) -> Dict[str, Any]:
         """Thực hiện 1 lượt đồng bộ cấu hình động + danh sách camera ONLINE 24/7."""
@@ -97,6 +317,10 @@ class CameraSyncManager:
                         "Dynamic ai.live_max_sessions updated -> %d",
                         dyn_limit,
                     )
+
+            # 1.5. Lấy thông tin model đang DEPLOYED từ Reporting Service nếu chưa đồng bộ
+            if self.enable_reporting_sync and self.active_model_version_id is None:
+                self.sync_active_model_once()
 
             # 2. Nếu có sự kiện tồn đọng ở offline SQLite buffer, thử flush lại
             try:
@@ -242,6 +466,8 @@ class CameraSyncManager:
                         camera_uuid=cam.get("id"),
                         source=cam["streamUrl"],
                         site_id=cam.get("siteId"),
+                        model_path=self.active_model_path,
+                        model_version_id=self.active_model_version_id,
                         target_fps=target_fps,
                         ai_fps=ai_fps,
                         roi_polygons=roi_polygons,
@@ -288,6 +514,11 @@ class CameraSyncManager:
                 self.sync_once()
             except Exception as exc:
                 logger.error("Unexpected error in CameraSyncManager loop: %s", exc)
+            if self.enable_reporting_sync and self.telemetry_enabled:
+                try:
+                    self.flush_telemetry_once(force=False)
+                except Exception as telem_exc:
+                    logger.debug("Telemetry flush loop error: %s", telem_exc)
             if self._stop_event.wait(self.sync_interval_s):
                 break
         logger.info("24/7 Camera auto-sync worker stopped")

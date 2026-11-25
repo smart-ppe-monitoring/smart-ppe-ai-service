@@ -13,6 +13,7 @@ from app.constants import (
     DEFAULT_PROFILE_ASPECT_RATIO_MIN,
     DEFAULT_COMPLIANT_GRACE_PERIOD_S,
     DEFAULT_COOLDOWN_DURATION_S,
+    DEFAULT_TELEMETRY_PUSH_INTERVAL_S,
     MINIO_BUCKET,
     VIOLATION_NO_HELMET,
     VIOLATION_NO_VEST,
@@ -24,6 +25,7 @@ load_dotenv()
 BACKEND_BASE_URL: str = os.getenv("BACKEND_BASE_URL", os.getenv("INCIDENT_SERVICE_URL", "http://localhost:8893"))
 CAMERA_SERVICE_URL: str = os.getenv("CAMERA_SERVICE_URL", "http://localhost:8892")
 SITE_SERVICE_URL: str = os.getenv("SITE_SERVICE_URL", "http://localhost:8891")
+REPORTING_SERVICE_URL: str = os.getenv("REPORTING_SERVICE_URL", "http://localhost:8894")
 IDENTITY_SERVICE_URL: str = os.getenv("IDENTITY_SERVICE_URL", "http://localhost:9999")
 GATEWAY_INTERNAL_SECRET: str = os.getenv("GATEWAY_INTERNAL_SECRET", "")
 INTERNAL_SERVICE_TOKEN: str = os.getenv("INTERNAL_SERVICE_TOKEN", os.getenv("AI_SERVICE_TOKEN", ""))
@@ -130,6 +132,11 @@ JWT_JWKS_CACHE_TTL_S: int = max(30, int(os.getenv("JWT_JWKS_CACHE_TTL_S", "300")
 LIVE_MAX_SESSIONS_DEFAULT: int = max(1, int(os.getenv("LIVE_MAX_SESSIONS", "16")))
 AI_AUTO_SYNC_ENABLED: bool = os.getenv("AI_AUTO_SYNC_ENABLED", "true").strip().lower() in ("1", "true", "yes")
 AI_CAMERA_SYNC_INTERVAL_S: float = max(5.0, float(os.getenv("AI_CAMERA_SYNC_INTERVAL_S", "15")))
+AI_TELEMETRY_ENABLED: bool = os.getenv("AI_TELEMETRY_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+AI_TELEMETRY_PUSH_INTERVAL_S: float = max(
+    5.0,
+    float(os.getenv("AI_TELEMETRY_PUSH_INTERVAL_S", str(DEFAULT_TELEMETRY_PUSH_INTERVAL_S))),
+)
 LIVE_DISPATCH_DEFAULT: bool = (os.getenv("LIVE_DISPATCH_ENABLED") or "true").strip().lower() in ("1", "true", "yes")
 LIVE_ALLOW_HTTP_STREAMS: bool = os.getenv("LIVE_ALLOW_HTTP_STREAMS", "false").strip().lower() in ("1", "true", "yes")
 LIVE_ALLOWED_RTSP_HOSTS: set[str] = {

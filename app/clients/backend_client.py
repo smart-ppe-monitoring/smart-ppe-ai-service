@@ -4,10 +4,13 @@ Không gọi Identity Service để kiểm tra quyền (Decentralized Auth).
 """
 
 import logging
-from typing import Optional
+import math
+from typing import Any, Optional
 import httpx
 from app import config
 from app.constants import (
+    HTTP_REPORTING_INTERNAL_ACTIVE_MODEL,
+    HTTP_REPORTING_INTERNAL_TELEMETRY,
     HTTP_SAFETY_RULES_DEFAULT,
     HTTP_SAFETY_RULES_EFFECTIVE,
     HTTP_SAFETY_RULES_INTERNAL_DEFAULT,
@@ -294,3 +297,89 @@ def fetch_dynamic_live_max_sessions_sync() -> Optional[int]:
     except Exception as exc:
         logger.debug("Dynamic ai.live_max_sessions fetch skipped (%s)", exc)
         return None
+
+
+def fetch_internal_active_model_version_sync(
+    model_type: str = "OBJECT_DETECTION",
+) -> Optional[dict]:
+    """
+    GET {REPORTING_SERVICE_URL}/api/v1/ai-models/internal/active-version
+    Lấy phiên bản mô hình AI đang được triển khai (DEPLOYED) qua M2M internal token.
+    """
+    base_url = getattr(config, "REPORTING_SERVICE_URL", "http://localhost:8894").rstrip("/")
+    url = f"{base_url}{HTTP_REPORTING_INTERNAL_ACTIVE_MODEL}"
+    params = {"modelType": model_type} if model_type else {}
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            resp = client.get(url, params=params, headers=_get_internal_m2m_headers())
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            payload = resp.json()
+            data = payload.get("data") if isinstance(payload, dict) else None
+            return data if isinstance(data, dict) else None
+    except Exception as exc:
+        logger.debug("Active model version fetch skipped (%s)", exc)
+        return None
+
+
+def push_ai_performance_telemetry_sync(payload: dict[str, Any]) -> bool:
+    """
+    POST {REPORTING_SERVICE_URL}/api/v1/statistics/internal/record-ai-performance
+    Đẩy telemetry hiệu năng AI (fps, latencyMs, p95LatencyMs, e2eAlertLatencyMs, frameCount) sang Reporting Service.
+    """
+    if not isinstance(payload, dict):
+        return False
+
+    camera_id = str(payload.get("cameraId") or "").strip()
+    if not camera_id:
+        return False
+
+    try:
+        fps = float(payload.get("fps", 0.0))
+        latency_ms = float(payload.get("latencyMs", 0.0))
+        frame_count = int(payload.get("frameCount", 0))
+    except (TypeError, ValueError):
+        return False
+
+    if not math.isfinite(fps) or fps <= 0 or not math.isfinite(latency_ms) or latency_ms <= 0 or frame_count < 1:
+        return False
+
+    clean_payload: dict[str, Any] = {
+        "cameraId": camera_id,
+        "fps": round(fps, 2),
+        "latencyMs": round(latency_ms, 2),
+        "frameCount": frame_count,
+    }
+
+    for optional_key in ("modelVersionId", "statDate"):
+        raw_val = payload.get(optional_key)
+        if isinstance(raw_val, str) and raw_val.strip():
+            clean_payload[optional_key] = raw_val.strip()
+
+    for numeric_key in ("p95LatencyMs", "e2eAlertLatencyMs"):
+        raw_num = payload.get(numeric_key)
+        if raw_num is not None:
+            try:
+                num_val = float(raw_num)
+                if math.isfinite(num_val) and num_val >= 0:
+                    clean_payload[numeric_key] = round(num_val, 2)
+            except (TypeError, ValueError):
+                pass
+
+    base_url = getattr(config, "REPORTING_SERVICE_URL", "http://localhost:8894").rstrip("/")
+    url = f"{base_url}{HTTP_REPORTING_INTERNAL_TELEMETRY}"
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            resp = client.post(url, json=clean_payload, headers=_get_internal_m2m_headers())
+            if 200 <= resp.status_code < 300:
+                return True
+            logger.warning(
+                "Reporting telemetry push rejected (HTTP %d) for camera %s",
+                resp.status_code,
+                camera_id,
+            )
+            return False
+    except Exception as exc:
+        logger.debug("Reporting telemetry push skipped for camera %s (%s)", camera_id, exc)
+        return False

@@ -17,11 +17,12 @@ from pathlib import Path
 import threading
 from typing import Annotated, Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Body, Depends, FastAPI, HTTPException
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app import config
+from app.constants import EVENT_AI_MODEL_DEPLOYED
 from app.auth import (
     AuthContext,
     PERM_PPE_CAMERA_MANAGE,
@@ -67,6 +68,7 @@ camera_sync_manager = CameraSyncManager(
     manager=live_engine_manager,
     dispatch_enabled=LIVE_DISPATCH_ENABLED,
     sync_interval_s=config.AI_CAMERA_SYNC_INTERVAL_S,
+    models_dir=MODELS_DIR,
 )
 
 
@@ -97,6 +99,23 @@ class LiveRuntimeConfigPatchRequest(BaseModel):
 
     max_sessions: Optional[Annotated[int, Field(ge=1, le=256)]] = None
     trigger_sync: bool = False
+
+
+class LiveSyncRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    trigger: Optional[str] = None
+    modelId: Optional[str] = None
+    modelCode: Optional[str] = None
+    modelName: Optional[str] = None
+    modelType: Optional[str] = None
+    versionId: Optional[str] = None
+    version: Optional[str] = None
+    modelPath: Optional[str] = None
+    framework: Optional[str] = None
+    inputSize: Optional[str] = None
+    deployedAt: Optional[str] = None
+    actorId: Optional[str] = None
 
 
 @asynccontextmanager
@@ -180,10 +199,24 @@ async def patch_live_runtime_config(
     }
 
 
-@app.post("/api/live/sync", tags=["Live Stream AI Engine"], summary="Kích hoạt đồng bộ ngay toàn bộ camera ONLINE 24/7")
+@app.post("/api/live/sync", tags=["Live Stream AI Engine"], summary="Kích hoạt đồng bộ ngay toàn bộ camera ONLINE 24/7 và sự kiện deploy AI model")
 async def trigger_live_sync(
+    req: Optional[LiveSyncRequest] = Body(default=None),
     auth: AuthContext = Depends(require_admin_or_permission(PERM_PPE_CAMERA_MANAGE)),
 ):
+    model_sync = None
+    if req is not None and (
+        req.trigger == EVENT_AI_MODEL_DEPLOYED or req.versionId or req.modelPath
+    ):
+        model_sync = await asyncio.to_thread(
+            camera_sync_manager.apply_deployed_model_sync,
+            version_id=req.versionId,
+            version=req.version,
+            model_path=req.modelPath,
+            models_dir=MODELS_DIR,
+            trigger=req.trigger,
+        )
+
     status = await asyncio.to_thread(camera_sync_manager.sync_once)
     sessions = live_engine_manager.list_sessions()
     if not (auth.is_internal or auth.is_admin or auth.site_ids is None):
@@ -196,6 +229,7 @@ async def trigger_live_sync(
     return {
         "status": "synced",
         **status,
+        "model_sync": model_sync,
         "sessions": sessions,
     }
 

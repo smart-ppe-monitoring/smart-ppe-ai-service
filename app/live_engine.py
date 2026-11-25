@@ -32,6 +32,11 @@ from app import config
 from app.constants import (
     CONTRACT_VERSION,
     STATE_UNKNOWN,
+    TELEMETRY_MAX_E2E_ALERT_LATENCY_MS,
+    TELEMETRY_MAX_FPS,
+    TELEMETRY_MAX_FRAME_COUNT,
+    TELEMETRY_MAX_LATENCY_MS,
+    TELEMETRY_MAX_P95_LATENCY_MS,
     VIOLATION_NO_HELMET,
     VIOLATION_NO_VEST,
     VIOLATION_RESTRICTED_AREA,
@@ -229,6 +234,16 @@ def _extract_object_key_from_url(url: Optional[str]) -> Optional[str]:
     return None
 
 
+def _normalize_model_path(raw: Optional[str]) -> str:
+    val = (raw or "").strip()
+    if not val:
+        return ""
+    try:
+        return str(Path(val).resolve())
+    except OSError:
+        return val
+
+
 class LiveStreamSession:
     """Phiên xử lý và phát luồng video trực tiếp với AI (YOLO + ByteTrack + Rules)."""
 
@@ -239,6 +254,7 @@ class LiveStreamSession:
         site_id: Optional[str] = None,
         camera_uuid: Optional[str] = None,
         model_path: Optional[str] = None,
+        model_version_id: Optional[str] = None,
         target_fps: float = 25.0,
         ai_fps: float = 15.0,
         roi_polygons: Optional[List[Any]] = None,
@@ -262,6 +278,11 @@ class LiveStreamSession:
         self.site_id = _validate_safe_id(site_id if site_id is not None else config.SITE_CODE, "site_id")
         self.camera_uuid = _validate_safe_id(camera_uuid, "camera_uuid") if camera_uuid else None
         self.model_path = model_path or config.YOLO_MODEL_PATH
+        self.model_version_id: Optional[str] = (
+            str(model_version_id)
+            if model_version_id and UUID_RE.match(str(model_version_id))
+            else None
+        )
         self.target_fps = max(1.0, min(60.0, float(target_fps)))
         self.ai_fps = max(1.0, min(self.target_fps, float(ai_fps)))
         self.roi_polygons = _validate_roi_polygons(roi_polygons)
@@ -322,6 +343,12 @@ class LiveStreamSession:
         self._last_person_states: list = []
         self._last_counts = {"person": 0, "helmet": 0, "safety_vest": 0}
 
+        # Rolling telemetry window để đẩy định kỳ sang Reporting Service
+        self._infer_latencies_ms: List[float] = []
+        self._e2e_latencies_ms: List[float] = []
+        self._telemetry_frames_delta: int = 0
+        self._telemetry_window_start_t: float = time.monotonic()
+
         # Realtime Metrics (D08.pdf Mục 2.8 & 6.3)
         self.metrics: Dict[str, Any] = {
             "fps": 0.0,
@@ -329,6 +356,7 @@ class LiveStreamSession:
             "ai_fps": self.ai_fps,
             "ai_fps_actual": 0.0,
             "inference_latency_ms": 0.0,
+            "p95_latency_ms": 0.0,
             "rule_latency_ms": 0.0,
             "e2e_alert_latency_ms": 0.0,
             "active_persons": 0,
@@ -694,6 +722,9 @@ class LiveStreamSession:
         """Ghi nhận vi phạm gần nhất phục vụ API /stats (tối đa 50 bản ghi)."""
         with self._lock:
             self.metrics["e2e_alert_latency_ms"] = e2e_latency
+            self._e2e_latencies_ms.append(float(e2e_latency))
+            if len(self._e2e_latencies_ms) > 200:
+                self._e2e_latencies_ms.pop(0)
             fallback_duration = (
                 self.confirmation_duration_vest_s
                 if "VEST" in (getattr(ev, "violation_type", "") or "").upper()
@@ -818,8 +849,14 @@ class LiveStreamSession:
             ai_fps_window.append(t_curr)
             while ai_fps_window and t_curr - ai_fps_window[0] > 1.0:
                 ai_fps_window.pop(0)
+            self._infer_latencies_ms.append(float(infer_ms))
+            if len(self._infer_latencies_ms) > 500:
+                self._infer_latencies_ms.pop(0)
+            self._telemetry_frames_delta += 1
+            p95_infer = float(np.percentile(self._infer_latencies_ms, 95))
             self.metrics["ai_fps_actual"] = round(float(len(ai_fps_window)), 1)
             self.metrics["inference_latency_ms"] = round(infer_ms, 1)
+            self.metrics["p95_latency_ms"] = round(p95_infer, 2)
             self.metrics["rule_latency_ms"] = round(rule_ms, 1)
             self.metrics["active_persons"] = counts["person"]
             self.metrics["active_violations"] = len([
@@ -836,6 +873,92 @@ class LiveStreamSession:
                 self._dispatch_evidence_async,
                 frame_snap, dets_snap, ev, frame_w, frame_h, states_snap, frame_num,
             )
+
+    def drain_telemetry_batch(
+        self,
+        default_model_version_id: Optional[str] = None,
+    ) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+        """Lấy và reset bộ đếm telemetry định kỳ để đẩy sang Reporting Service (có hỗ trợ rollback khi lỗi mạng)."""
+        with self._lock:
+            target_cam_uuid = (
+                self.camera_uuid
+                if self.camera_uuid and UUID_RE.match(self.camera_uuid)
+                else (self.camera_id if UUID_RE.match(self.camera_id) else None)
+            )
+            if target_cam_uuid is None or self._telemetry_frames_delta <= 0:
+                return None
+
+            frames = self._telemetry_frames_delta
+            infer_samples = list(self._infer_latencies_ms)
+            e2e_samples = list(self._e2e_latencies_ms)
+            prev_start_t = self._telemetry_window_start_t
+            now_t = time.monotonic()
+
+            self._telemetry_frames_delta = 0
+            self._infer_latencies_ms.clear()
+            self._e2e_latencies_ms.clear()
+            self._telemetry_window_start_t = now_t
+
+            fallback_latency = float(self.metrics.get("inference_latency_ms") or 1.0)
+            resolved_mv_id = self.model_version_id or (
+                str(default_model_version_id)
+                if default_model_version_id and UUID_RE.match(str(default_model_version_id))
+                else None
+            )
+
+        elapsed_s = max(0.001, now_t - prev_start_t)
+        fps_val = round(max(0.01, min(TELEMETRY_MAX_FPS, frames / elapsed_s)), 2)
+        raw_avg_lat = float(np.mean(infer_samples)) if infer_samples else fallback_latency
+        avg_lat_val = round(max(0.01, min(TELEMETRY_MAX_LATENCY_MS, raw_avg_lat)), 2)
+        raw_p95_lat = float(np.percentile(infer_samples, 95)) if infer_samples else raw_avg_lat
+        p95_lat_val = round(max(0.0, min(TELEMETRY_MAX_P95_LATENCY_MS, raw_p95_lat)), 2)
+        e2e_val = (
+            round(max(0.0, min(TELEMETRY_MAX_E2E_ALERT_LATENCY_MS, float(np.mean(e2e_samples)))), 2)
+            if e2e_samples
+            else None
+        )
+        frame_count_val = max(1, min(TELEMETRY_MAX_FRAME_COUNT, int(frames)))
+
+        payload: Dict[str, Any] = {
+            "cameraId": target_cam_uuid,
+            "fps": fps_val,
+            "latencyMs": avg_lat_val,
+            "p95LatencyMs": p95_lat_val,
+            "frameCount": frame_count_val,
+        }
+        if resolved_mv_id:
+            payload["modelVersionId"] = resolved_mv_id
+        if e2e_val is not None:
+            payload["e2eAlertLatencyMs"] = e2e_val
+
+        rollback = {
+            "frames": frames,
+            "infer_samples": infer_samples,
+            "e2e_samples": e2e_samples,
+            "start_t": prev_start_t,
+        }
+        return payload, rollback
+
+    def restore_telemetry_batch(self, rollback: Dict[str, Any]) -> None:
+        """Khôi phục bộ đếm telemetry nếu lần gửi sang Reporting Service thất bại."""
+        if not isinstance(rollback, dict):
+            return
+        with self._lock:
+            self._telemetry_frames_delta = min(
+                TELEMETRY_MAX_FRAME_COUNT,
+                self._telemetry_frames_delta + int(rollback.get("frames") or 0),
+            )
+            infer_restored = list(rollback.get("infer_samples") or [])
+            if infer_restored:
+                combined_infer = infer_restored + self._infer_latencies_ms
+                self._infer_latencies_ms = combined_infer[-500:]
+            e2e_restored = list(rollback.get("e2e_samples") or [])
+            if e2e_restored:
+                combined_e2e = e2e_restored + self._e2e_latencies_ms
+                self._e2e_latencies_ms = combined_e2e[-200:]
+            old_start = rollback.get("start_t")
+            if isinstance(old_start, (int, float)) and old_start < self._telemetry_window_start_t:
+                self._telemetry_window_start_t = float(old_start)
 
     def _ai_worker_loop(
         self,
@@ -1246,6 +1369,10 @@ class LiveEngineManager:
         with self._lock:
             return self._sessions.get(str(camera_id))
 
+    def iter_sessions(self) -> List[LiveStreamSession]:
+        with self._lock:
+            return list(self._sessions.values())
+
     def start_session(
         self,
         camera_id: str,
@@ -1253,6 +1380,7 @@ class LiveEngineManager:
         site_id: Optional[str] = None,
         camera_uuid: Optional[str] = None,
         model_path: Optional[str] = None,
+        model_version_id: Optional[str] = None,
         target_fps: float = 25.0,
         ai_fps: float = 15.0,
         roi_polygons: Optional[List[Any]] = None,
@@ -1273,8 +1401,12 @@ class LiveEngineManager:
         with self._lock:
             existing = self._sessions.get(camera_id)
             if existing and existing.status in ("running", "initializing", "reconnecting"):
-                # Cập nhật cấu hình nếu cùng source và site/camera không đổi
-                if existing.source == source and (site_id is None or existing.site_id == site_id):
+                model_changed = bool(
+                    model_path
+                    and _normalize_model_path(model_path) != _normalize_model_path(existing.model_path)
+                )
+                # Cập nhật cấu hình nếu cùng source, site/camera và model không đổi
+                if not model_changed and existing.source == source and (site_id is None or existing.site_id == site_id):
                     existing.update_config(
                         target_fps=target_fps,
                         ai_fps=ai_fps,
@@ -1293,9 +1425,11 @@ class LiveEngineManager:
                     )
                     if camera_uuid:
                         existing.camera_uuid = _validate_safe_id(camera_uuid, "camera_uuid")
+                    if model_version_id and UUID_RE.match(str(model_version_id)):
+                        existing.model_version_id = str(model_version_id)
                     existing.managed = bool(managed)
                     return existing
-                # Đổi source khác -> dừng session cũ
+                # Đổi source hoặc model weights mới -> dừng session cũ để nạp lại detector
                 existing.stop()
 
             # Giới hạn số phiên đang hoạt động (không tính phiên của chính camera này)
@@ -1314,6 +1448,7 @@ class LiveEngineManager:
                 site_id=site_id,
                 camera_uuid=camera_uuid,
                 model_path=model_path,
+                model_version_id=model_version_id,
                 target_fps=target_fps,
                 ai_fps=ai_fps,
                 roi_polygons=roi_polygons,
@@ -1353,6 +1488,8 @@ class LiveEngineManager:
                     "site_id": s.site_id,
                     "status": s.status,
                     "managed": s.managed,
+                    "model_path": s.model_path,
+                    "model_version_id": s.model_version_id,
                     "reconnect_count": s.reconnect_count,
                     "dispatch_enabled": s.dispatch_enabled,
                     "target_fps": s.target_fps,
