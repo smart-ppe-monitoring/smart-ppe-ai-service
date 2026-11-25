@@ -353,6 +353,8 @@ def create_common_live_router(
             "site_id": session.site_id,
             "status": session.status,
             "managed": session.managed,
+            "model_path": session.model_path,
+            "model_version_id": session.model_version_id,
             "reconnect_count": session.reconnect_count,
             "error": session.error_message,
             "metrics": session.metrics,

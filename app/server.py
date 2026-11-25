@@ -118,15 +118,33 @@ class LiveSyncRequest(BaseModel):
     actorId: Optional[str] = None
 
 
+def _startup_sync_and_prewarm() -> None:
+    try:
+        camera_sync_manager.sync_active_model_once()
+    except Exception as exc:
+        logger.debug("Startup active model sync skipped: %s", exc)
+    rec_model = MODELS_DIR / "yolo11s_joint_phase3.pt"
+    target = (
+        camera_sync_manager.active_model_path
+        or (str(rec_model) if rec_model.exists() else config.YOLO_MODEL_PATH)
+    )
+    preload_detector(target)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     if not os.getenv("PYTEST_CURRENT_TEST"):
-        rec_model = MODELS_DIR / "yolo11s_joint_phase3.pt"
-        target = str(rec_model) if rec_model.exists() else config.YOLO_MODEL_PATH
-        threading.Thread(target=preload_detector, args=(target,), daemon=True, name="model-prewarm").start()
+        threading.Thread(
+            target=_startup_sync_and_prewarm,
+            daemon=True,
+            name="model-prewarm",
+        ).start()
         if config.AI_AUTO_SYNC_ENABLED:
             camera_sync_manager.start_background()
+        if config.AI_TELEMETRY_ENABLED:
+            camera_sync_manager.start_telemetry_background()
     yield
+    camera_sync_manager.stop_telemetry_background()
     camera_sync_manager.stop_background()
     live_engine_manager.stop_all()
     try:
@@ -158,9 +176,13 @@ def health_check():
         "mode": "production",
         "dispatch_enabled": LIVE_DISPATCH_ENABLED,
         "auto_sync_enabled": config.AI_AUTO_SYNC_ENABLED,
+        "telemetry_enabled": config.AI_TELEMETRY_ENABLED,
         "active_sessions": active,
         "max_sessions": live_engine_manager.get_max_sessions(),
         "sync_ok": sync_status.get("last_sync_ok"),
+        "active_model_version_id": sync_status.get("active_model_version_id"),
+        "active_model_version": sync_status.get("active_model_version"),
+        "active_model_sync_status": sync_status.get("active_model_sync_status"),
     }
 
 
@@ -315,7 +337,8 @@ async def start_production_live(
         if auth.site_ids:
             resolved_site_id = next(iter(sorted(auth.site_ids)))
 
-    model_path = resolve_model_path(req.model, MODELS_DIR)
+    model_path = resolve_model_path(req.model, MODELS_DIR) or camera_sync_manager.active_model_path
+    active_mv_id = camera_sync_manager.active_model_version_id if not req.model else None
 
     try:
         session = live_engine_manager.start_session(
@@ -324,6 +347,7 @@ async def start_production_live(
             source=source_val,
             site_id=resolved_site_id,
             model_path=model_path,
+            model_version_id=active_mv_id,
             target_fps=req.target_fps,
             ai_fps=req.ai_fps,
             roi_polygons=resolved_roi,

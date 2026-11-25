@@ -140,6 +140,9 @@ def _isolate_env():
     orig_mv_id = sync_mgr.active_model_version_id
     orig_mv = sync_mgr.active_model_version
     orig_mpath = sync_mgr.active_model_path
+    orig_expected_path = sync_mgr.active_model_expected_path
+    orig_sync_status = sync_mgr.active_model_sync_status
+    orig_sync_msg = sync_mgr.active_model_sync_message
 
     yield
 
@@ -152,6 +155,9 @@ def _isolate_env():
     sync_mgr.active_model_version_id = orig_mv_id
     sync_mgr.active_model_version = orig_mv
     sync_mgr.active_model_path = orig_mpath
+    sync_mgr.active_model_expected_path = orig_expected_path
+    sync_mgr.active_model_sync_status = orig_sync_status
+    sync_mgr.active_model_sync_message = orig_sync_msg
     auth_mod.clear_auth_caches()
 
 
@@ -454,5 +460,108 @@ def test_live_sync_endpoint_handles_empty_body_and_deploy_notification():
         assert body_deploy["active_model_version_id"] == v_uuid
         assert body_deploy["active_model_version"] == "2.5.0"
         assert body_deploy["model_sync"]["applied"] is True
+        assert body_deploy["model_sync"]["status"] == "synced"
         assert body_deploy["model_sync"]["version_id"] == v_uuid
         assert body_deploy["model_sync"]["reason"] == "model_reloaded"
+
+        # 4. Missing local weights reports explicit weights_missing status instead of silent drift
+        v_missing_uuid = "0199b001-0000-7000-8000-000000000889"
+        res_missing = client.post(
+            "/api/live/sync",
+            headers={"x-internal-service-token": "sync-endpoint-m2m-token-32-chars!"},
+            json={
+                "trigger": EVENT_AI_MODEL_DEPLOYED,
+                "versionId": v_missing_uuid,
+                "version": "9.9.9",
+                "modelPath": "models/missing-weights-v9.pt",
+            },
+        )
+        assert res_missing.status_code == 200
+        body_missing = res_missing.json()
+        assert body_missing["model_sync"]["status"] == "weights_missing"
+        assert body_missing["model_sync"]["expected_model_path"] == "models/missing-weights-v9.pt"
+        assert body_missing["model_sync"]["reloaded_sessions"] == 0
+        assert "missing-weights-v9.pt" in body_missing["model_sync"]["message"]
+
+        health_res = client.get("/health")
+        assert health_res.status_code == 200
+        health_body = health_res.json()
+        assert health_body["telemetry_enabled"] is True
+        assert health_body["active_model_version_id"] == v_missing_uuid
+        assert health_body["active_model_sync_status"] == "weights_missing"
+
+
+def test_sync_active_model_once_and_background_telemetry_resilience(tmp_path: Path):
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    weight_file = models_dir / "yolo-active.pt"
+    weight_file.write_bytes(b"active-weights")
+
+    active_mv_uuid = "0199b001-0000-7000-8000-000000000901"
+    cam_uuid = "0199a001-0000-7000-8000-000000000902"
+
+    mgr = LiveEngineManager(max_sessions=4)
+    sync_mgr = CameraSyncManager(
+        manager=mgr,
+        dispatch_enabled=False,
+        sync_interval_s=15.0,
+        telemetry_enabled=True,
+        telemetry_push_interval_s=5.0,
+        models_dir=models_dir,
+        enable_reporting_sync=True,
+    )
+    sync_mgr.telemetry_push_interval_s = 0.05
+
+    with patch(
+        "app.live_sync.fetch_internal_active_model_version_sync",
+        return_value={
+            "id": active_mv_uuid,
+            "version": "3.1.0",
+            "modelPath": "models/yolo-active.pt",
+        },
+    ):
+        synced = sync_mgr.sync_active_model_once()
+        assert synced is not None
+        assert synced["status"] == "synced"
+        assert sync_mgr.active_model_version_id == active_mv_uuid
+        assert Path(sync_mgr.active_model_path).resolve() == weight_file.resolve()
+
+    sess = LiveStreamSession(
+        camera_id="CAM-BG-01",
+        camera_uuid=cam_uuid,
+        source="0",
+        model_version_id=active_mv_uuid,
+        dispatch_enabled=False,
+    )
+    with mgr._lock:
+        mgr._sessions["CAM-BG-01"] = sess
+
+    sess._telemetry_frames_delta = 30
+    sess._infer_latencies_ms = [20.0, 30.0, 40.0]
+
+    delivered_payloads: list[dict] = []
+    attempt_counter = {"count": 0}
+    delivered_event = threading.Event()
+
+    def _flaky_reporting_push(payload: dict) -> bool:
+        attempt_counter["count"] += 1
+        if attempt_counter["count"] <= 2:
+            return False
+        delivered_payloads.append(payload)
+        delivered_event.set()
+        return True
+
+    with patch("app.live_sync.push_ai_performance_telemetry_sync", side_effect=_flaky_reporting_push):
+        sync_mgr.start_telemetry_background()
+        try:
+            assert delivered_event.wait(timeout=3.0), "Background reporter should retry and deliver buffered telemetry"
+        finally:
+            sync_mgr.stop_telemetry_background()
+            with mgr._lock:
+                mgr._sessions.clear()
+
+    assert attempt_counter["count"] >= 3
+    assert len(delivered_payloads) == 1
+    assert delivered_payloads[0]["cameraId"] == cam_uuid
+    assert delivered_payloads[0]["modelVersionId"] == active_mv_uuid
+    assert delivered_payloads[0]["frameCount"] == 30

@@ -113,6 +113,8 @@ class CameraSyncManager:
         self._sync_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._telemetry_stop_event = threading.Event()
+        self._telemetry_thread: Optional[threading.Thread] = None
 
         self.last_sync_at: Optional[str] = None
         self.last_sync_ok: Optional[bool] = None
@@ -125,6 +127,9 @@ class CameraSyncManager:
         self.active_model_version_id: Optional[str] = None
         self.active_model_version: Optional[str] = None
         self.active_model_path: Optional[str] = None
+        self.active_model_expected_path: Optional[str] = None
+        self.active_model_sync_status: str = "not_synced"
+        self.active_model_sync_message: Optional[str] = None
         self.last_model_sync_at: Optional[str] = None
         self.last_telemetry_push_at: Optional[str] = None
         self.last_telemetry_pushed_count: int = 0
@@ -144,6 +149,9 @@ class CameraSyncManager:
             "active_model_version_id": self.active_model_version_id,
             "active_model_version": self.active_model_version,
             "active_model_path": self.active_model_path,
+            "active_model_expected_path": self.active_model_expected_path,
+            "active_model_sync_status": self.active_model_sync_status,
+            "active_model_sync_message": self.active_model_sync_message,
             "last_model_sync_at": self.last_model_sync_at,
             "telemetry_enabled": self.telemetry_enabled,
             "telemetry_push_interval_s": self.telemetry_push_interval_s,
@@ -169,6 +177,11 @@ class CameraSyncManager:
             self.active_model_version_id = str(version_id)
         if isinstance(version, str) and version.strip():
             self.active_model_version = version.strip()
+        self.active_model_expected_path = (
+            model_path.strip()
+            if isinstance(model_path, str) and model_path.strip()
+            else None
+        )
         self.last_model_sync_at = now_iso
 
         resolved_local_path = _resolve_safe_local_model_path(model_path, target_models_dir)
@@ -176,6 +189,10 @@ class CameraSyncManager:
 
         if resolved_local_path is not None:
             self.active_model_path = resolved_local_path
+            self.active_model_sync_status = "synced"
+            self.active_model_sync_message = (
+                f"Loaded local weights {Path(resolved_local_path).name}"
+            )
             if not os.getenv("PYTEST_CURRENT_TEST"):
                 threading.Thread(
                     target=preload_detector,
@@ -234,26 +251,51 @@ class CameraSyncManager:
             )
             return {
                 "applied": True,
+                "status": self.active_model_sync_status,
                 "trigger": trigger or EVENT_AI_MODEL_DEPLOYED,
                 "version_id": self.active_model_version_id,
                 "version": self.active_model_version,
                 "model_path": resolved_local_path,
+                "expected_model_path": self.active_model_expected_path,
                 "reloaded_sessions": reloaded_sessions,
                 "reason": "model_reloaded",
+                "message": self.active_model_sync_message,
             }
 
         for sess in self.manager.iter_sessions():
             if self.active_model_version_id:
                 sess.model_version_id = self.active_model_version_id
 
+        if self.active_model_expected_path:
+            self.active_model_sync_status = "weights_missing"
+            self.active_model_sync_message = (
+                f"Deployed version {self.active_model_version or self.active_model_version_id or 'unknown'} "
+                f"references '{self.active_model_expected_path}', which is not available locally in {target_models_dir}"
+            )
+            logger.warning(
+                "AI model deploy sync warning: %s",
+                self.active_model_sync_message,
+            )
+        elif self.active_model_version_id:
+            self.active_model_sync_status = "synced"
+            self.active_model_sync_message = (
+                f"Tracked active version {self.active_model_version or self.active_model_version_id} without local weight override"
+            )
+        else:
+            self.active_model_sync_status = "not_synced"
+            self.active_model_sync_message = "No active model version metadata provided"
+
         return {
             "applied": bool(self.active_model_version_id),
+            "status": self.active_model_sync_status,
             "trigger": trigger or EVENT_AI_MODEL_DEPLOYED,
             "version_id": self.active_model_version_id,
             "version": self.active_model_version,
             "model_path": self.active_model_path,
+            "expected_model_path": self.active_model_expected_path,
             "reloaded_sessions": 0,
             "reason": "version_tracked_local_weights_unavailable",
+            "message": self.active_model_sync_message,
         }
 
     def sync_active_model_once(self) -> Optional[Dict[str, Any]]:
@@ -514,7 +556,11 @@ class CameraSyncManager:
                 self.sync_once()
             except Exception as exc:
                 logger.error("Unexpected error in CameraSyncManager loop: %s", exc)
-            if self.enable_reporting_sync and self.telemetry_enabled:
+            if (
+                self.enable_reporting_sync
+                and self.telemetry_enabled
+                and not (self._telemetry_thread and self._telemetry_thread.is_alive())
+            ):
                 try:
                     self.flush_telemetry_once(force=False)
                 except Exception as telem_exc:
@@ -522,6 +568,39 @@ class CameraSyncManager:
             if self._stop_event.wait(self.sync_interval_s):
                 break
         logger.info("24/7 Camera auto-sync worker stopped")
+
+    def _run_telemetry_worker(self) -> None:
+        logger.info(
+            "AI telemetry reporter started (interval=%.1fs)",
+            self.telemetry_push_interval_s,
+        )
+        while not self._telemetry_stop_event.wait(self.telemetry_push_interval_s):
+            if not self.enable_reporting_sync or not self.telemetry_enabled:
+                continue
+            try:
+                self.flush_telemetry_once(force=True)
+            except Exception as exc:
+                logger.debug("Background telemetry reporter tick failed: %s", exc)
+        logger.info("AI telemetry reporter stopped")
+
+    def start_telemetry_background(self) -> None:
+        if not self.telemetry_enabled:
+            return
+        if self._telemetry_thread and self._telemetry_thread.is_alive():
+            return
+        self._telemetry_stop_event.clear()
+        self._telemetry_thread = threading.Thread(
+            target=self._run_telemetry_worker,
+            name="ai-telemetry-reporter",
+            daemon=True,
+        )
+        self._telemetry_thread.start()
+
+    def stop_telemetry_background(self) -> None:
+        self._telemetry_stop_event.set()
+        if self._telemetry_thread and self._telemetry_thread.is_alive():
+            self._telemetry_thread.join(timeout=2.0)
+        self._telemetry_thread = None
 
     def start_background(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -539,6 +618,7 @@ class CameraSyncManager:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3.0)
         self._thread = None
+        self.stop_telemetry_background()
 
 
 camera_sync_manager = CameraSyncManager()
